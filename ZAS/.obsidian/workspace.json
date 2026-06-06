@@ -4,22 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "1562a4b51a8995bd",
+        "id": "305c56cadbe1bac9",
         "type": "tabs",
         "children": [
           {
-            "id": "80e194ce385dd3e6",
+            "id": "b7d74cee2b92a8f6",
             "type": "leaf",
             "state": {
-              "type": "outline",
+              "type": "markdown",
               "state": {
                 "file": "欢迎.md",
-                "followCursor": false,
-                "showSearch": false,
-                "searchQuery": ""
+                "mode": "source",
+                "source": false
               },
-              "icon": "lucide-list",
-              "title": "欢迎 的大纲"
+              "icon": "lucide-file",
+              "title": "欢迎"
             }
           }
         ]
@@ -195,10 +194,10 @@
       "obsidian-git:Open Git source control": false
     }
   },
-  "active": "80e194ce385dd3e6",
+  "active": "b7d74cee2b92a8f6",
   "lastOpenFiles": [
-    "欢迎.md",
     "未命名.canvas",
+    "欢迎.md",
     "nimc_env_config.md",
     "rpc_if_data_format.md",
     "未命名.md",
