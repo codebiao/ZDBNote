@@ -1,0 +1,9 @@
+{
+	"nodes":[
+		{"id":"529d83371a3373a7","type":"text","text":"halouya ","x":-640,"y":-540,"width":250,"height":60},
+		{"id":"ca6863d828c130f9","type":"text","text":"halouya ","x":-600,"y":-40,"width":250,"height":60},
+		{"id":"740ccd18ada7d644","type":"text","text":"halouya ","x":-980,"y":-280,"width":250,"height":60},
+		{"id":"30d1e48afb6bce9e","type":"text","text":"halouya ","x":-350,"y":-280,"width":250,"height":60}
+	],
+	"edges":[]
+}
