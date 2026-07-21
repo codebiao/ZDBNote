@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "欢迎.md",
+                "file": "nimc_env_config.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "欢迎"
+              "title": "nimc_env_config"
             }
           }
         ]
@@ -180,7 +180,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 262.5
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -196,8 +196,8 @@
   },
   "active": "b7d74cee2b92a8f6",
   "lastOpenFiles": [
-    "未命名.canvas",
     "欢迎.md",
+    "未命名.canvas",
     "nimc_env_config.md",
     "rpc_if_data_format.md",
     "未命名.md",

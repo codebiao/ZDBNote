@@ -19,6 +19,7 @@ perftest
 valgrind
 valgrind-dbg
 gdb
+pstack
 patchelf
 nfs-kernel-server
 nfs-common
@@ -42,6 +43,7 @@ lm-sensors
 dwarves
 smartmontools
 inotify-tools
+ipmitool
 ```
 
 - `sudo xargs -a /opt/software/requirements.txt apt install -y`
@@ -206,6 +208,45 @@ kill -SIGSEGV $$
 cd /cluster_files/data/crash && ls
 ```
 
+## 设置p_stack采集环境
+
+qscan超时重启前会先采集zppj进程栈，优先使用`pstack`，如果没有`pstack`则回退到`gdb`。
+
+```bash
+# Ubuntu 22.04 pstack在universe源中，如果安装失败先开启universe
+sudo add-apt-repository universe
+sudo apt update
+sudo apt install pstack gdb -y
+```
+
++ 检查
+
+```bash
+which pstack
+which gdb
+
+# 采集指定进程栈
+pstack <pid>
+
+# pstack不可用时的fallback
+sudo gdb -batch -p <pid> -ex "thread apply all bt" -ex detach -ex quit
+```
+
+## 检查 PAM 配置（解决 screen 下 limits.conf 不生效）
+
+screen 启动时可能没有调用 `pam_limits.so` 模块，导致 `/etc/security/limits.conf` 中的 ulimit 配置不生效。
+
+检查 `/etc/pam.d/screen` 文件，确保包含以下行：
+
+```bash
+sudo vim /etc/pam.d/screen
+```
+
+```
+session    required   pam_limits.so
+```
+
+
 ## 设置主机名称
 ```bash
 sudo hostnamectl set-hostname imc1
@@ -264,11 +305,13 @@ done
 ```
 
 - 设置脚本执行权限
+
 ```bash
 sudo chmod +x /usr/local/bin/set_pfc.sh
 ```
 
  - 创建systemd服务文件
+
 ```bash
 sudo vim /etc/systemd/system/set-pfc.service
 
@@ -305,6 +348,7 @@ sudo systemctl status set-pfc.service
 
 ## NTP时间同步
 - Linux作为NTP客户端
+
 ```bash
 sudo vim /etc/ntp.conf
 
@@ -710,8 +754,7 @@ sudo tar -zxvf cmake-3.31.5.tar.gz
 cd cmake-3.31.5
 sudo ./bootstrap
 # Not recommended! "sudo ./configure --prefix=/usr/local/cmake3.30.2"
-sudo make -j$(nproc)
-sudo make install
+sudo make -j$(nproc) install
 ```
 
 + Test：`cmake --version`
@@ -940,7 +983,7 @@ sudo nvidia-smi -q -d RDMA | grep -i "GPUDirect RDMA"
 # Install required dependencies
 # if has network
 sudo apt-get install build-essential
-sudo apt-get install libgtk2.0-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
+sudo apt-get install libgtk-3-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
 
 cd /opt/software
 git clone -b 4.12.0 https://github.com/opencv/opencv.git opencv-4.12.0
@@ -954,6 +997,8 @@ unzip opencv_contrib-4.12.0.zip
 
 # then make build
 cd opencv-4.12.0
+# If the previous build failed after changing GTK/OpenGL options:
+# sudo rm -rf build
 sudo mkdir build && cd build
 conda activate base				# activate python env
 sudo cmake -D CMAKE_INSTALL_PREFIX=/usr/local/myapp_install/opencv4.12.0 \
@@ -971,7 +1016,7 @@ sudo cmake -D CMAKE_INSTALL_PREFIX=/usr/local/myapp_install/opencv4.12.0 \
            -D WITH_CUBLAS=ON \
            -D WITH_TBB=ON \
            -D WITH_QT=OFF \
-           -D WITH_OPENGL=ON \
+           -D WITH_OPENGL=OFF \
            -D WITH_NVCUVID=OFF \
            -D WITH_NVCUVENC=OFF \
            -D BUILD_TESTS=OFF \
@@ -982,6 +1027,20 @@ sudo cmake -D CMAKE_INSTALL_PREFIX=/usr/local/myapp_install/opencv4.12.0 \
            
 # Please wait patiently, the above step will download something.
 sudo make -j$(nproc) install				# It takes a long time
+```
+
+Note: keep `WITH_OPENGL=OFF` unless OpenCV's OpenGL window APIs are required.
+With GTK2 and no `gtkglext`, OpenCV 4.12.0 may fail while linking `libopencv_highgui.so` with undefined references to
+`cvSetOpenGlDrawCallback`, `cvSetOpenGlContext`, and `cvUpdateWindow`.
+If OpenGL highgui support is required, install a compatible GUI/OpenGL backend first, remove the old `build` directory,
+and re-run CMake, for example:
+
+```bash
+sudo apt-get install libgtk-3-dev libgl1-mesa-dev libglu1-mesa-dev
+cd /opt/software/opencv-4.12.0
+sudo rm -rf build
+sudo mkdir build && cd build
+# then re-run the CMake command above with -D WITH_OPENGL=ON
 ```
 
 + Configure environment variables
@@ -1071,6 +1130,9 @@ tar -xzf node_exporter-1.7.0.linux-amd64.tar.gz
 cd node_exporter-1.7.0.linux-amd64
 sudo cp node_exporter /usr/local/bin/
 sudo chmod +x /usr/local/bin/node_exporter
+sudo mkdir -p /var/lib/node_exporter/textfile_collector
+sudo chown zas:zas /var/lib/node_exporter/textfile_collector
+
 sudo vim /etc/systemd/system/node_exporter.service
 [Unit]
 Description=Node Exporter
@@ -1080,21 +1142,87 @@ After=network.target
 User=zas
 Group=zas
 Type=simple
-ExecStart=/usr/local/bin/node_exporter
+ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
 
 [Install]
 WantedBy=multi-user.target
 
 sudo systemctl daemon-reload
 sudo systemctl enable node_exporter.service
-sudo systemctl start node_exporter.service
+sudo systemctl restart node_exporter.service
 sudo systemctl status node_exporter.service
 
+# Mellanox 网卡温度采集
+​```bash
+sudo vim /usr/local/bin/mellanox_temp_collector.sh
+
+#!/bin/bash
+cd /  # 避免当前工作目录不可达时 getcwd 报错
+OUTPUT_DIR="/var/lib/node_exporter/textfile_collector"
+OUTPUT_FILE="${OUTPUT_DIR}/mellanox_temp.prom"
+TMP_FILE="${OUTPUT_FILE}.tmp"
+
+> "$TMP_FILE"
+
+lspci | grep Mellanox | while read -r line; do
+    pci_addr=$(echo "$line" | awk '{print $1}')
+    temp=$(mget_temp -d "$pci_addr" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$temp" ]; then
+        echo "node_mellanox_temp_celsius{pci_addr=\"$pci_addr\"} $temp" >> "$TMP_FILE"
+    fi
+done
+
+mv "$TMP_FILE" "$OUTPUT_FILE"
+```
+
+- 赋予权限：`sudo chmod +x /usr/local/bin/mellanox_temp_collector.sh`
+
+- 创建 systemd 定时任务
+
+```bash
+sudo vim /etc/systemd/system/mellanox_temp.service
+
+[Unit]
+Description=Collect Mellanox NIC temperature
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/mellanox_temp_collector.sh
+```
+
+```bash
+sudo vim /etc/systemd/system/mellanox_temp.timer
+
+[Unit]
+Description=Run mellanox temp collector every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+```
+
+- 启用并启动
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mellanox_temp.timer
+
+# 验证
+sudo /usr/local/bin/mellanox_temp_collector.sh
+cat /var/lib/node_exporter/textfile_collector/mellanox_temp.prom
+curl -s http://localhost:9100/metrics | grep mellanox_temp
+```
 
 # env variable
-​```bash
+```bash
 sudo vim /etc/profile
+```
 
+```bash
 # /etc/profile: system-wide .profile file for the Bourne shell (sh(1))
 # and Bourne compatible shells (bash(1), ksh(1), ash(1), ...).
 
@@ -1166,4 +1294,3 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GSL_HOME}/lib
 export LIBRARY_PATH=$LIBRARY_PATH:${GSL_HOME}/lib
 
 ```
-
