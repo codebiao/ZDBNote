@@ -1217,6 +1217,92 @@ cat /var/lib/node_exporter/textfile_collector/mellanox_temp.prom
 curl -s http://localhost:9100/metrics | grep mellanox_temp
 ```
 
+# CPU 使用率采集
+
+说明：node_exporter 的 `node_cpu_seconds_total` 是开机以来的累计计数器，单次抓取无法得到使用率，
+因此用定时任务周期性读取 `/proc/stat` 并与上一次采样求差值，把真实使用率写入 textfile 目录。
+暴露指标：
+- `node_cpu_usage_ratio`：CPU 使用率（0~1，前端 ×100 即百分比），统计窗口为两次采样的间隔
+- `node_cpu_usage_collector_timestamp_seconds`：采样时间戳（unix 秒），可用于判断数据是否过期
+
+```bash
+sudo vim /usr/local/bin/cpu_usage_collector.sh
+
+#!/bin/bash
+cd /  # 避免当前工作目录不可达时 getcwd 报错
+OUTPUT_DIR="/var/lib/node_exporter/textfile_collector"
+OUTPUT_FILE="${OUTPUT_DIR}/cpu_usage.prom"
+TMP_FILE="${OUTPUT_FILE}.tmp"
+STATE_FILE="${OUTPUT_DIR}/.cpu_stat_prev"
+
+# /proc/stat 第一行是全部核的累计 jiffies: user nice system idle iowait irq softirq steal ...
+read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
+total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+idle_all=$idle
+
+# 与上一次采样求差值: usage = 1 - Δidle/Δtotal
+if [[ -f "$STATE_FILE" ]]; then
+    read -r prev_total prev_idle < "$STATE_FILE"
+    d_total=$((total - prev_total))
+    d_idle=$((idle_all - prev_idle))
+    if (( d_total > 0 )); then
+        ratio=$(awk -v dt="$d_total" -v di="$d_idle" 'BEGIN{printf "%.4f", (dt - di) / dt}')
+        {
+            echo "node_cpu_usage_ratio ${ratio}"
+            echo "node_cpu_usage_collector_timestamp_seconds $(date +%s)"
+        } > "$TMP_FILE"
+        mv "$TMP_FILE" "$OUTPUT_FILE"  # 原子替换，避免 node_exporter 读到半个文件
+    fi
+fi
+
+echo "$total $idle_all" > "$STATE_FILE"
+```
+
+- 赋予权限：`sudo chmod +x /usr/local/bin/cpu_usage_collector.sh`
+
+- 创建 systemd 定时任务（每 5 秒采样一次，比温度采集频率高，因为 CPU 变化快）
+
+```bash
+sudo vim /etc/systemd/system/cpu_usage.service
+
+[Unit]
+Description=Collect CPU usage ratio
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/cpu_usage_collector.sh
+```
+
+```bash
+sudo vim /etc/systemd/system/cpu_usage.timer
+
+[Unit]
+Description=Run cpu usage collector every 5 seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=5s
+# systemd 默认 AccuracySec=1min，会把亚分钟级 timer 的触发合并延迟最多 1 分钟，
+# 导致采样出现几十秒的空窗，必须显式调小
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+```
+
+- 启用并启动
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now cpu_usage.timer
+
+# 验证（首次运行只写状态文件不出指标，等 10 秒以上再看）
+sleep 10
+cat /var/lib/node_exporter/textfile_collector/cpu_usage.prom
+curl -s http://localhost:9100/metrics | grep node_cpu_usage
+```
+
 # env variable
 ```bash
 sudo vim /etc/profile
