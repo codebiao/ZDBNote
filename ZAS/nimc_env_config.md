@@ -813,7 +813,7 @@ sudo apt-get install -y libssl-dev
 
 # Download the specified version of the library
 cd /opt/software
-git clone -b v1.66.1 https://github.com/grpc/grpc.git
+git clone -b v1.66.1 --depth 1 https://github.com/grpc/grpc.git
 cd grpc
 git submodule update --init --recursive	# Initialize the submodule
 mkdir build -p && cd build
@@ -986,8 +986,8 @@ sudo apt-get install build-essential
 sudo apt-get install libgtk-3-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
 
 cd /opt/software
-git clone -b 4.12.0 https://github.com/opencv/opencv.git opencv-4.12.0
-git clone -b 4.12.0 https://github.com/opencv/opencv_contrib.git opencv_contrib-4.12.0
+git clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv.git opencv-4.12.0
+git clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv_contrib.git opencv_contrib-4.12.0
 
 # if no network, download opencv-4.12.0.zip and opencv_contrib-4.12.0.zip and upload it to linux
 cd /opt/software
@@ -1105,13 +1105,13 @@ int main()
 sudo apt install autoconf -y
 sudo apt install flex bison -y
 cd /opt/software
-git clone https://github.com/the-tcpdump-group/libpcap.git
+git clone --depth 1 https://github.com/the-tcpdump-group/libpcap.git
 cd libpcap
 sudo ./autogen.sh && sudo ./configure && sudo  make install
 
 # Compile tcpdump with the same command.
 cd /opt/software
-git clone https://github.com/the-tcpdump-group/tcpdump.git
+git clone --depth 1 https://github.com/the-tcpdump-group/tcpdump.git
 cd tcpdump
 sudo ./autogen.sh && sudo ./configure &&  sudo make install
 ```
