@@ -945,7 +945,7 @@ lsmod | grep nouveau		# If no content is displayed, the disablement was successf
 
 ```bash
 cd /opt/software
-wget https://developer.download.nvidia.com/compute/cuda/12.6.2/local_installers/cuda_12.6.0_560.28.03_linux.run
+wget https://developer.download.nvidia.com/compute/cuda/12.6.0/local_installers/cuda_12.6.0_560.28.03_linux.run
 sudo sh cuda_12.6.0_560.28.03_linux.run
 ```
 
@@ -1153,7 +1153,7 @@ sudo systemctl restart node_exporter.service
 sudo systemctl status node_exporter.service
 
 # Mellanox 网卡温度采集
-​```bash
+```bash
 sudo vim /usr/local/bin/mellanox_temp_collector.sh
 
 #!/bin/bash

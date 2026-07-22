@@ -15,7 +15,7 @@
               "state": {
                 "file": "nimc_env_config.md",
                 "mode": "source",
-                "source": false
+                "source": true
               },
               "icon": "lucide-file",
               "title": "nimc_env_config"
@@ -89,6 +89,21 @@
         "type": "tabs",
         "children": [
           {
+            "id": "73922062fa54a01b",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "nimc_env_config.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "nimc_env_config 的大纲"
+            }
+          },
+          {
             "id": "07c9941585255be2",
             "type": "leaf",
             "state": {
@@ -151,22 +166,7 @@
             }
           },
           {
-            "id": "d93bb0b75b38333b",
-            "type": "leaf",
-            "state": {
-              "type": "outline",
-              "state": {
-                "file": "欢迎.md",
-                "followCursor": false,
-                "showSearch": false,
-                "searchQuery": ""
-              },
-              "icon": "lucide-list",
-              "title": "欢迎 的大纲"
-            }
-          },
-          {
-            "id": "fead832f0ca203b6",
+            "id": "3e489c2a5ee80b58",
             "type": "leaf",
             "state": {
               "type": "git-view",
@@ -180,7 +180,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 262.5
+    "width": 398.5
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -197,8 +197,8 @@
   "active": "b7d74cee2b92a8f6",
   "lastOpenFiles": [
     "欢迎.md",
-    "未命名.canvas",
     "nimc_env_config.md",
+    "未命名.canvas",
     "rpc_if_data_format.md",
     "未命名.md",
     "Untitled.md",
