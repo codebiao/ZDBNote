@@ -44,6 +44,7 @@ dwarves
 smartmontools
 inotify-tools
 ipmitool
+clang
 ```
 
 - `sudo xargs -a /opt/software/requirements.txt apt install -y`
@@ -976,6 +977,50 @@ lsmod | grep nvidia_peermem
 sudo nvidia-smi -q -d RDMA | grep -i "GPUDirect RDMA"
 ```
 
+# TensorRT
+
++ Download TensorRT from the [official site](https://developer.nvidia.com/tensorrt/download/10x)。  
+  Select the **TAR package** matching your CUDA version, e.g. `TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.6.tar.gz`
+
+```bash
+cd /opt/software
+wget https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.16.1/tars/TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
+tar -xzvf TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
+sudo mv TensorRT-10.16.1.11 /usr/local/myapp_install/
+```
+
++ Configure environment variables
+
+```bash
+sudo vim /etc/profile
+# Add at the end
+# TensorRT
+export TENSORRT_DIR=/usr/local/myapp_install/TensorRT-10.16.1.11
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$TENSORRT_DIR/lib
+export PATH=$PATH:$TENSORRT_DIR/bin
+export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:$TENSORRT_DIR/include
+
+# Update configuration file
+source /etc/profile
+```
+
++ Verify installation
+
+```bash
+ldd $TENSORRT_DIR/bin/trtexec
+```
+
+> Notes:
+> - In TensorRT 10.x, `trtexec` loads `libnvinfer.so` via `dlopen` at runtime,
+>   so `ldd trtexec | grep nvinfer` returns nothing. That is normal — look for
+>   `libnvonnxparser.so` resolving to `$TENSORRT_DIR/lib` instead.
+> - `LD_LIBRARY_PATH` does NOT populate the `ldconfig` cache, so
+>   `ldconfig -p | grep nvinfer` will also be empty unless you register the lib
+>   directory explicitly:
+>   ```bash
+>   echo "$TENSORRT_DIR/lib" | sudo tee /etc/ld.so.conf.d/tensorrt.conf
+>   sudo ldconfig
+>   ```
 # Opencv
 + Download the source from the [official-site](https://opencv.org/releases/)：`opencv-4.12.0.zip`
 
