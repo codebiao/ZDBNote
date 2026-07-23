@@ -216,7 +216,7 @@ sudo apt-get install zlib1g zlib1g-dev -y
 
 cd /opt/software
 wget -c https://nginx.org/download/nginx-1.26.3.tar.gz
-tar -zxvf nginx-1.26.3.tar.gz
+sudo tar -zxvf nginx-1.26.3.tar.gz
 cd nginx-1.26.3
 ./configure --prefix=/usr/local/myapp_install/nginx \
   --with-http_ssl_module \
@@ -235,9 +235,9 @@ cd /usr/local/myapp_install/nginx/sbin
 sudo ./nginx
 
 # check
-ps aux|grep nginx
+ps -aux | grep nginx
 # close
-./nginx -s stop
+sudo ./nginx -s stop
 ```
 
 ## 配置
