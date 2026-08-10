@@ -32,9 +32,8 @@ libwebsockets-dev
 libjson-c-dev 
 libssl-dev
 ttyd
-ntpdate
-ntp
-samba 
+chrony
+samba
 network-manager
 autofs
 stress
@@ -70,29 +69,55 @@ sudo timedatectl set-timezone Asia/Shanghai
 date
 date -R
 echo $TZ
-# 如果时间还是不正确，有网络的可以同步一下北京时间
-sudo apt install ntpdate
-sudo systemctl stop ntp
-sudo ntpdate ntp.aliyun.com
+# 如果时间还是不正确，有网络的可以同步一下北京时间（24.04起用chrony代替ntpdate）
+sudo apt install chrony
+sudo systemctl stop chronyd
+sudo chronyd -q "server ntp.aliyun.com iburst"
+sudo systemctl start chronyd
 ```
 
 ## 禁止内核更新
+
+> `needrestart` 只是一个提示工具（检查 apt 升级后哪些服务需要重启），**不能控制更新内容**。
+> 移除它只能消除升级后的检查提示，内核包依然会随着 `apt upgrade` 更新。
+
+### Hold 内核包
+
+```bash
+# 查看当前已安装的内核版本
+dpkg -l | grep linux-image
+
+# Hold 内核及相关包，防止被 apt upgrade 升级
+sudo apt-mark hold linux-image-generic linux-headers-generic
+# 如果用的不是 generic 镜像，改为指定当前版本：
+# sudo apt-mark hold linux-image-$(uname -r) linux-headers-$(uname -r)
+
+# 确认 hold 是否生效
+apt-mark showhold
+
+# ---- 诊断：如何判断问题是否由内核更新引起 ----
+# 列出所有已安装的内核版本
+ls /lib/modules/
+
+# 检查 nvidia 模块在各内核下是否存在
+# 如果旧内核下有 nvidia.ko 而当前内核下没有 → 确认是内核更新的锅
+for k in $(ls /lib/modules/); do
+    found=$(find /lib/modules/$k -name "nvidia.ko" 2>/dev/null)
+    if [ -n "$found" ]; then
+        echo "[OK]  $k has nvidia.ko: $found"
+    else
+        echo "[MISS] $k — no nvidia.ko"
+    fi
+done
+
+# 查看内核包的安装/更新时间（最近更新的有嫌疑）
+grep -E "install|upgrade" /var/log/dpkg.log* 2>/dev/null | grep linux-image | tail -10
+```
+
+### 附加：移除 needrestart（可选，消除升级后服务重启提示）
+
 ```bash
 sudo apt autoremove -y --purge needrestart
-```
-
-## 设置coredump
-
-```bash
-sudo vim /etc/sysctl.d/core_pattern.conf
-```
-
-```bash
-kernel.core_pattern=/cluster_files/data/crash/core.%e.%p.%h.%t
-```
-
-```bash
-sudo sysctl -p /etc/sysctl.d/core_pattern.conf
 ```
 
 ## 设置sudo免密
@@ -349,32 +374,35 @@ sudo systemctl status set-pfc.service
 
 ## NTP时间同步
 - Linux作为NTP客户端
+- Ubuntu 24.04起ntpd/ntpdate已废弃，改用chrony
 
 ```bash
-sudo vim /etc/ntp.conf
+sudo apt install chrony
 
-# 添加以下内容
-# Use servers from the NTP Pool Project. Approved by Ubuntu Technical Board
-# on 2011-02-08 (LP: #104525). See http://www.pool.ntp.org/join.html for
-# more information.
-#pool 0.ubuntu.pool.ntp.org iburst
-#pool 1.ubuntu.pool.ntp.org iburst
-#pool 2.ubuntu.pool.ntp.org iburst
-#pool 3.ubuntu.pool.ntp.org iburst
-tos maxdist 30
+sudo vim /etc/chrony/chrony.conf
+
+# 注释掉默认的pool，添加内网NTP服务器
+#pool ntp.ubuntu.com        iburst maxsources 4
+#pool 0.ubuntu.pool.ntp.org iburst maxsources 1
+#pool 1.ubuntu.pool.ntp.org iburst maxsources 1
+#pool 2.ubuntu.pool.ntp.org iburst maxsources 2
 server 192.168.99.100 iburst
 
-# Use Ubuntu's ntp server as a fallback.
-#pool ntp.ubuntu.com		# 注释掉
+# 允许在启动时进行大幅度时间校正（类似原来的tos maxdist效果）
+makestep 1.0 3
 
-sudo systemctl restart ntp
+sudo systemctl restart chronyd
 ```
 
 ```
 # 强制同步时间
-sudo systemctl stop ntp
-sudo ntpdate -b -v 192.168.99.1
-sudo systemctl start ntp
+sudo chronyc -a makestep
+# 或指定服务器强制同步（类似原来的ntpdate）
+sudo chronyd -q "server 192.168.99.1 iburst"
+
+# 查看同步状态
+chronyc tracking
+chronyc sources -v
 ```
 
 ## NFS文件共享
@@ -942,6 +970,19 @@ lsmod | grep nouveau		# If no content is displayed, the disablement was successf
 ```
 + Driver:  `NVIDIA-Linux-x86_64-580.95.05.run`
 
+> **Note：强烈建议加 `--dkms` 参数安装，这样内核更新后模块会自动重建，不会出现 `modprobe: FATAL: Module nvidia not found` 的问题。**
+>
+> **如果不加 `--dkms`（默认行为），驱动只针对当前内核编译。一旦 `apt upgrade` 更新了内核，nvidia 模块不会自动重建，`nvidia-smi` 就会报错 "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver"。**
+> 此时必须重新运行 `.run` 安装文件来修复。
+
+```bash
+# 推荐：使用 DKMS 方式安装（内核更新后自动重建 nvidia 模块）
+sudo sh NVIDIA-Linux-x86_64-580.95.05.run --dkms
+
+# 若不使用 --dkms，每次内核更新后需要手动重新安装：
+# sudo sh NVIDIA-Linux-x86_64-580.95.05.run
+```
+
 + Cuda
 
 ```bash
@@ -975,6 +1016,27 @@ nvidia-smi topo -m				# 查看是否在同一总线下, gpu和rdma的直连不�
 sudo modprobe nvidia_peermem
 lsmod | grep nvidia_peermem
 sudo nvidia-smi -q -d RDMA | grep -i "GPUDirect RDMA"
+```
+
++ Troubleshoot：内核更新后 nvidia 模块丢失
+
+```bash
+# 症状：nvidia-smi 报 "couldn't communicate with the NVIDIA driver"
+#       modprobe nvidia 报 "FATAL: Module nvidia not found in directory /lib/modules/xxx"
+
+# 1. 确认模块是否确实缺失
+find /lib/modules/$(uname -r) -name "nvidia.ko" 2>/dev/null
+
+# 2. 检查 DKMS 状态
+dkms status 2>/dev/null | grep -i nvidia
+
+# 3. 修复：重新运行 NVIDIA 驱动安装程序
+#    如果之前安装时加了 --dkms，内核更新后模块会自动重建，通常不会出现此问题。
+#    如果之前没加 --dkms，必须手动重新安装：
+sudo sh /opt/software/NVIDIA-Linux-x86_64-580.95.05.run --dkms
+#    安装后验证：
+sudo modprobe nvidia
+nvidia-smi
 ```
 
 # TensorRT
