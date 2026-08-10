@@ -24,18 +24,22 @@ ssh zas@11.0.0.101
 ```
 
 # NTP时间同步
-+  Linux的NTP配置
++  Linux的NTP配置（Ubuntu 24.04起ntpd已废弃，改用chrony）
 
 ```bash
-sudo vim /etc/ntp.conf
+sudo apt install chrony
 
-tos maxdist 30
+sudo vim /etc/chrony/chrony.conf
+
 server 192.168.99.1 iburst
-restrict 192.168.99.0 mask 255.255.255.0 nomodify notrap
+# 允许内网客户端访问（对应原来的restrict）
+allow 192.168.99.0/24
+# 允许启动时大幅度校正（对应原来的tos maxdist）
+makestep 1.0 3
 ```
 
 ```bash
-sudo systemctl restart ntp
+sudo systemctl restart chronyd
 ```
 
 
@@ -181,8 +185,17 @@ sudo vim /etc/samba/smb.conf	# 添加以下内容
 
 [mshare]
    comment = share results using Samba
-   path = /mshare
+   path = /cluster_files/data/mshare
    public = yes
+   writable = yes
+   available = yes
+   browseable = yes
+   valid users = zas
+
+[mdata]
+   comment = share raw data using Samba
+   path = /imc_list
+   public = no
    writable = yes
    available = yes
    browseable = yes
@@ -259,7 +272,7 @@ ps -aux | grep nginx		# 查看
 ```bash
 mkdir -p /cluster_files/uploads/config/ssl/
 
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -subj "/C=CN/ST=Default/L=Default/O=Default/OU=IT/CN=localhost" \
   -keyout /cluster_files/uploads/config/ssl/server.key \
   -out /cluster_files/uploads/config/ssl/server.crt
@@ -385,6 +398,21 @@ http {
             add_header Access-Control-Allow-Methods 'GET, POST, OPTIONS';
             add_header Access-Control-Allow-Headers 'Content-Type, Authorization';
         }
+        
+        location /numa {
+            proxy_pass https://192.168.99.100:8888/numa;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            add_header Access-Control-Allow-Origin *;
+            add_header Access-Control-Allow-Methods 'GET, POST, OPTIONS';
+            add_header Access-Control-Allow-Headers 'Content-Type, Authorization';
+        }
+
+
+
 
         location /imc_list {
             alias /imc_list;                # 指定文件夹路径
