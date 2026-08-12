@@ -11,15 +11,13 @@ cmake
 autoconf 
 libtool 
 pkg-config
-libssl-dev
 net-tools
 unzip
 screen
 perftest
 valgrind
-valgrind-dbg
+libc6-dbg
 gdb
-pstack
 patchelf
 nfs-kernel-server
 nfs-common
@@ -36,7 +34,7 @@ chrony
 samba
 network-manager
 autofs
-stress
+stress-ng
 iperf3
 lm-sensors
 dwarves
@@ -51,16 +49,14 @@ clang
 # Common Setting
 
 ## Date
-```yaml
-sudo vim /etc/profile
-# Add at the end
+```bash
+echo "
 # date
 TZ='Asia/Shanghai'
-export TZ
+export TZ" | sudo tee -a /etc/profile > /dev/null
 
+sudo timedatectl set-timezone Asia/Shanghai 
 source /etc/profile
-
-sudo timedatectl set-timezone Asia/Shanghai
 ```
 
 + Test
@@ -122,10 +118,10 @@ sudo apt autoremove -y --purge needrestart
 
 ## 设置sudo免密
 ```bash
-sudo visudo
-
-#在文件末尾加上
-zas ALL=(ALL) NOPASSWD:ALL
+echo "zas ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/zas 
+sudo chmod 0440 /etc/sudoers.d/zas
+sudo -k         # 清除当前的 sudo 密码缓存 
+sudo ls /root   # 测试免密是否生效 
 ```
 
 ## IP配置
@@ -184,15 +180,12 @@ sudo netplan apply
 ```bash
 ulimit -c 	# 查看当前Core Dump设置，若为0则代表没打开
 
-sudo vim /etc/security/limits.conf
-# 在文件末尾加上
-# remove core dump limit
+echo "
+# core dump limit
 zas soft core unlimited
-zas hard core unlimited
+zas hard core unlimited" | sudo tee -a /etc/security/limits.conf > /dev/null
 
-sudo vim /etc/sysctl.conf
-# 在文件末尾加上
-kernel.core_pattern=|/usr/bin/core_handler.sh %h %t %e %p
+echo "\nkernel.core_pattern=|/usr/bin/core_handler.sh %h %t %e %p" | sudo tee -a /etc/sysctl.conf > /dev/null
 
 sudo sysctl -p
 ```
@@ -794,7 +787,7 @@ sudo make -j$(nproc) install
 
 ```bash
 cd /opt/software
-wget -c https://repo.anaconda.com/archive/Anaconda3-2024.06-1-Linux-x86_64.sh
+sudo wget -c https://repo.anaconda.com/archive/Anaconda3-2024.06-1-Linux-x86_64.sh
 
 sudo bash Anaconda3-2024.06-1-Linux-x86_64.sh
 # PREFIX
@@ -804,11 +797,10 @@ sudo bash Anaconda3-2024.06-1-Linux-x86_64.sh
 + Configure environment variables
 
 ```bash
-sudo vim /etc/profile
-# Add at the end
+echo '
 # Anaconda
 ANACONDA_HOME=/usr/local/myapp_install/anaconda3
-export PATH=$PATH:${ANACONDA_HOME}/bin
+export PATH=$PATH:${ANACONDA_HOME}/bin' | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -853,15 +845,14 @@ sudo make -j$(nproc) install
 + Configure environment variables
 
 ```bash
-sudo vim /etc/profile
-# Add at the end
+echo '
 # grpc
 GRPC_HOME=/usr/local/myapp_install/grpc1.66.1
 export PATH=$PATH:${GRPC_HOME}/bin
 export C_INCLUDE_PATH=$C_INCLUDE_PATH:${GRPC_HOME}/include
 export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:${GRPC_HOME}/include
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GRPC_HOME}/lib
-export LIBRARY_PATH=$LIBRARY_PATH:${GRPC_HOME}/lib
+export LIBRARY_PATH=$LIBRARY_PATH:${GRPC_HOME}/lib' | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -900,13 +891,12 @@ sudo make -j$(nproc) install
 + Configure environment variables
 
 ```bash
-sudo vim /etc/profile
-# Add at the end
+echo '
 # openmpi
 MPI_HOME=/usr/local/myapp_install/openmpi5.0.5
 export PATH=$PATH:${MPI_HOME}/bin
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${MPI_HOME}/lib
-export MANPATH=$MANPATH:${MPI_HOME}/share/man
+export MANPATH=$MANPATH:${MPI_HOME}/share/man' | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -994,12 +984,11 @@ sudo sh cuda_12.6.0_560.28.03_linux.run
 + Configure environment variables
 
 ```bash
-sudo vim /etc/profile
-# Add at the end
+echo '
 # Cuda
 CUDA_HOME=/usr/local/cuda
 export PATH=$PATH:${CUDA_HOME}/bin
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${CUDA_HOME}/lib64
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${CUDA_HOME}/lib64' | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -1054,13 +1043,12 @@ sudo mv TensorRT-10.16.1.11 /usr/local/myapp_install/
 + Configure environment variables
 
 ```bash
-sudo vim /etc/profile
-# Add at the end
+echo "
 # TensorRT
 export TENSORRT_DIR=/usr/local/myapp_install/TensorRT-10.16.1.11
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$TENSORRT_DIR/lib
 export PATH=$PATH:$TENSORRT_DIR/bin
-export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:$TENSORRT_DIR/include
+export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:$TENSORRT_DIR/include" | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -1090,7 +1078,7 @@ ldd $TENSORRT_DIR/bin/trtexec
 # Install required dependencies
 # if has network
 sudo apt-get install build-essential
-sudo apt-get install libgtk-3-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
+sudo apt-get install libgtk-3-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev -y
 
 cd /opt/software
 git clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv.git opencv-4.12.0
@@ -1153,15 +1141,14 @@ sudo mkdir build && cd build
 + Configure environment variables
 
 ```bash
-sudo vim /etc/profile
-# Add at the end
+echo "
 # opencv
 OPENCV_HOME=/usr/local/myapp_install/opencv4.12.0
 export C_INCLUDE_PATH=$C_INCLUDE_PATH:${OPENCV_HOME}/include
 export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:${OPENCV_HOME}/include
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${OPENCV_HOME}/lib
 export LIBRARY_PATH=$LIBRARY_PATH:${OPENCV_HOME}/lib
-export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${OPENCV_HOME}/lib/pkgconfig
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${OPENCV_HOME}/lib/pkgconfig" | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
