@@ -231,7 +231,7 @@ cd /opt/software
 wget -c https://nginx.org/download/nginx-1.26.3.tar.gz
 sudo tar -zxvf nginx-1.26.3.tar.gz
 cd nginx-1.26.3
-./configure --prefix=/usr/local/myapp_install/nginx \
+sudo ./configure --prefix=/usr/local/myapp_install/nginx \
   --with-http_ssl_module \
   --with-http_v2_module \
   --with-stream \
@@ -244,13 +244,12 @@ sudo make install -j$(nproc)
 + Test
 
 ```bash
-cd /usr/local/myapp_install/nginx/sbin
-sudo ./nginx
+sudo /usr/local/myapp_install/nginx/sbin/nginx
 
 # check
 ps -aux | grep nginx
 # close
-sudo ./nginx -s stop
+sudo /usr/local/myapp_install/nginx/sbin/nginx -s stop
 ```
 
 ## 配置
@@ -258,30 +257,25 @@ sudo ./nginx -s stop
 sudo chmod 777 -R /usr/local/myapp_install/nginx/html
 cd /usr/local/myapp_install/nginx/html
 # 拷贝网页文件dist到html文件夹下
-sudo vim /usr/local/myapp_install/nginx/conf/nginx.conf
-# 将location下的root， 从html 改为html/dist
 
-sudo /usr/local/myapp_install/nginx/sbin/nginx						# 启动
+sudo /usr/local/myapp_install/nginx/sbin/nginx				# 启动
 sudo /usr/local/myapp_install/nginx/sbin/nginx -s stop		# 关闭
 sudo /usr/local/myapp_install/nginx/sbin/nginx -s reload	# 重新加载
 ps -aux | grep nginx		# 查看
 ```
 
-+ nginx.conf
++ `sudo mkdir -p /cluster_files/uploads/config/ssl`
 
 ```bash
-mkdir -p /cluster_files/uploads/config/ssl/
-
-openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -subj "/C=CN/ST=Default/L=Default/O=Default/OU=IT/CN=localhost" \
   -keyout /cluster_files/uploads/config/ssl/server.key \
   -out /cluster_files/uploads/config/ssl/server.crt
-
 ```
 
-```bash
-sudo vim /usr/local/myapp_install/nginx/conf/nginx.conf
++ `sudo vim /usr/local/myapp_install/nginx/conf/nginx.conf`
 
+```bash
 #user  nobody;
 worker_processes  1;
 
@@ -452,10 +446,9 @@ http {
 
 + 为nginx配置`systemd` 服务
 
-```bash
-sudo vim /etc/systemd/system/nginx.service
++ `sudo vim /etc/systemd/system/nginx.service`
 
-# Add at the end
+```bash
 [Unit]
 Description=NGINX Web Server
 Documentation=http://nginx.org/en/docs/
@@ -483,9 +476,9 @@ sudo systemctl restart nginx.service
 sudo systemctl reload nginx.service
 sudo systemctl stop nginx.service
 
-ps -aux | grep nginx		# 查看
-sudo systemctl status nginx.service	 # 检查 systemd 服务的状态
-sudo journalctl -u nginx.service		 # 查看日志输出
+ps -aux | grep nginx		         # 查看
+sudo systemctl status nginx.service  # 检查 systemd 服务的状态
+sudo journalctl -u nginx.service     # 查看日志输出
 sudo systemctl enable nginx.service  # 设置为开机自启
 ```
 

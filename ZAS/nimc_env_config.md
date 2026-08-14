@@ -12,6 +12,7 @@ autoconf
 libtool 
 pkg-config
 net-tools
+zip
 unzip
 screen
 perftest
@@ -42,11 +43,39 @@ smartmontools
 inotify-tools
 ipmitool
 clang
+# OpenMPI
+libnuma-dev
+numactl
+libucx-dev
+ucx-utils
+# opencv
+libgtk-3-dev 
+pkg-config 
+libavcodec-dev 
+libavformat-dev 
+libswscale-dev 
+libgl1-mesa-dev 
+libglu1-mesa-dev
 ```
 
-- `sudo xargs -a /opt/software/requirements.txt apt install -y`
+-  `grep -v '^#' /opt/software/requirements.txt | sudo xargs sudo apt install -y`
+
 
 # Common Setting
+
+## 设置sudo免密
+```bash
+echo "zas ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/zas 
+sudo chmod 0440 /etc/sudoers.d/zas
+sudo -k         # 清除当前的 sudo 密码缓存 
+sudo ls /root   # 测试免密是否生效 
+```
+
+## 创建文件夹
+```bash
+sudo mkdir -p /cluster_files && sudo mkdir -p /cluster_files/data
+sudo chmod -R 777 /cluster_files /opt
+```
 
 ## Date
 ```bash
@@ -55,8 +84,7 @@ echo "
 TZ='Asia/Shanghai'
 export TZ" | sudo tee -a /etc/profile > /dev/null
 
-sudo timedatectl set-timezone Asia/Shanghai 
-source /etc/profile
+sudo timedatectl set-timezone Asia/Shanghai && source /etc/profile
 ```
 
 + Test
@@ -116,14 +144,6 @@ grep -E "install|upgrade" /var/log/dpkg.log* 2>/dev/null | grep linux-image | ta
 sudo apt autoremove -y --purge needrestart
 ```
 
-## 设置sudo免密
-```bash
-echo "zas ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/zas 
-sudo chmod 0440 /etc/sudoers.d/zas
-sudo -k         # 清除当前的 sudo 密码缓存 
-sudo ls /root   # 测试免密是否生效 
-```
-
 ## IP配置
 + 以imc1为例，创建并编写的文件：`sudo vim /etc/netplan/00-installer-config.yaml`
 
@@ -131,20 +151,20 @@ sudo ls /root   # 测试免密是否生效
 #this is the network config written by 'user'
 network:
     ethernets:
-        eno1:
-            addresses: [192.168.99.101/24]
-        eno2:
+        enp198s0:
+            addresses: [192.168.99.104/24]
+        enp199s0:
             addresses: [172.16.107.27/24]
             nameservers:
               addresses: [172.16.100.57]
             routes:
             - to: default
               via: 172.16.107.254
-        enp129s0f0np0:
-            addresses: [10.0.0.101/24]
+        enp193s0f0np0:
+            addresses: [10.0.0.104/24]
             mtu: 4200
-        enp129s0f1np1:
-            addresses: [11.0.0.101/24]
+        enp193s0f1np1:
+            addresses: [11.0.0.104/24]
             mtu: 4200
     version: 2
 ```
@@ -154,11 +174,10 @@ vim命令模式 输入 `:set paste` 即可粘贴原格式，退出粘贴模式�
 + 赋予权限：`sudo chmod 600 /etc/netplan/00-installer-config.yaml`
 + 应用新的网络配置：`sudo netplan apply`
 + 检查：`ip a`
-+ 禁用cloud-init: 
++ 禁用cloud-init:  
+	+ `sudo vim /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg`
 
 ```bash
-sudo vim /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
-
 # 在文件中追加
 network: {config: disabled}
 
@@ -185,7 +204,8 @@ echo "
 zas soft core unlimited
 zas hard core unlimited" | sudo tee -a /etc/security/limits.conf > /dev/null
 
-echo "\nkernel.core_pattern=|/usr/bin/core_handler.sh %h %t %e %p" | sudo tee -a /etc/sysctl.conf > /dev/null
+echo "
+kernel.core_pattern=|/usr/bin/core_handler.sh %h %t %e %p" | sudo tee -a /etc/sysctl.conf > /dev/null
 
 sudo sysctl -p
 ```
@@ -203,7 +223,7 @@ EXE_NAME=$3		# 可执行文件名，对应 %e
 PID=$4			# 进程 ID， 对应 %p
 
 # 1. 创建存储目录（防止不存在）
-mkdir -p -m 777 "$STORAGE_PATH"
+sudo mkdir -p -m 777 "$STORAGE_PATH"
 
 # 2. 转换时间格式 (年月日_时分秒)
 DATE_TIME=$(date -d "@$TIMESTAMP" "+%Y%m%d_%H%M%S")
@@ -224,7 +244,7 @@ cat - > "$CORE_FILE"
 kill -SIGSEGV $$
 
 # 查看
-cd /cluster_files/data/crash && ls
+ls /cluster_files/data/crash
 ```
 
 ## 设置p_stack采集环境
@@ -282,27 +302,28 @@ sudo vim /etc/ssh/sshd_config
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
 
-sudo systemctl restart sshd
+sudo systemctl restart ssh
 ```
 
 ## PFC流控
 + 用命令（重启后失效）
 
 ```bash
-# 查看PFC
+# 查看PFC（10 网卡：zppj↔FPGA 的 RoCE 数据通道）
 sudo mlnx_qos -i enp193s0f0np0 --trust dscp
 # 设置PFC		# mlnx_qos 命令本身是非持久化的，重启后会失效
 sudo mlnx_qos -i enp193s0f0np0 --pfc 1,0,0,0,0,0,0,0
+# 11 网卡（IP 为 11.0.0.x：MPI 走 UCX/RoCE 的通道）同样需要设置 PFC，网卡名可用 `ip -br addr` 确认
+sudo mlnx_qos -i enp193s0f1np1 --pfc 1,0,0,0,0,0,0,0
 ```
 
 + 持久化
++ `sudo vim /usr/local/bin/set_pfc.sh`
 
 ```bash
-sudo vim /usr/local/bin/set_pfc.sh
-
 #!/bin/bash
 # PFC自动配置脚本
-# 在IP地址为10.0.0.*的网卡上启用PFC
+# 在IP地址为10.0.0.* 或 11.0.0.* 的网卡上启用PFC
 
 sleep 60  # 等待网络服务完全启动
 
@@ -311,8 +332,8 @@ for interface in $(ls /sys/class/net/); do
     # 获取当前网卡的 IPv4 地址
     IP=$(ip -4 addr show "$interface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
     
-    # 检查 IP 地址是否在 10.0.0.*范围内
-    if [[ $IP =~ ^10\.0\.0\.[0-9]{1,3}$ ]]; then
+    # 检查 IP 地址是否在 10.0.0.* 或 11.0.0.* 范围内
+    if [[ $IP =~ ^(10|11)\.0\.0\.[0-9]{1,3}$ ]]; then
         echo "Setting PFC on $interface ($IP)"
         if sudo mlnx_qos -i "$interface" --pfc 1,0,0,0,0,0,0,0; then
             echo "PFC set successfully on $interface ($IP)"
@@ -323,19 +344,13 @@ for interface in $(ls /sys/class/net/); do
 done
 ```
 
-- 设置脚本执行权限
++ 设置脚本执行权限：`sudo chmod +x /usr/local/bin/set_pfc.sh`
+
+ + 创建systemd服务文件：`sudo vim /etc/systemd/system/set-pfc.service`
 
 ```bash
-sudo chmod +x /usr/local/bin/set_pfc.sh
-```
-
- - 创建systemd服务文件
-
-```bash
-sudo vim /etc/systemd/system/set-pfc.service
-
 [Unit]
-Description=Set PFC on interfaces with IP in 10.0.0.* range
+Description=Set PFC on interfaces with IP in 10.0.0.* or 11.0.0.* range
 After=network-online.target
 Wants=network-online.target
 
@@ -387,7 +402,7 @@ makestep 1.0 3
 sudo systemctl restart chronyd
 ```
 
-```
+```bash
 # 强制同步时间
 sudo chronyc -a makestep
 # 或指定服务器强制同步（类似原来的ntpdate）
@@ -400,12 +415,11 @@ chronyc sources -v
 
 ## NFS文件共享
 ```bash
-sudo apt install nfs-common
-sudo apt install nfs-kernel-server
+sudo apt install nfs-common nfs-kernel-server
 
-sudo mkdir /cluster_files	# 创建共享目录
+sudo mkdir /cluster_files	        # 创建共享目录
 sudo chmod -R 777 /cluster_files	# 修改共享目录权限
-sudo vim /etc/exports		# 修改配置文件
+sudo vim /etc/exports		        # 修改配置文件
 
 # 在文件中加入以下内容
 /cluster_files/data     192.168.99.0/24(rw,sync,no_root_squash)
@@ -569,7 +583,7 @@ exit 0
 ```
 
 + 赋予权限:`sudo chmod +x /usr/local/bin/cleanup_folder.sh`
-
+ 
 + 设置systemd服务
   
     - `sudo vim /etc/systemd/system/cleanup_folder.service`
@@ -720,9 +734,7 @@ done
 
 - 赋予权限: `sudo chmod +x /usr/local/bin/scan_node_link_latest.sh`
 
-- 设置systemd服务
-
-  - `sudo vim /etc/systemd/system/scannode-link.service`
+- 设置systemd服务： `sudo vim /etc/systemd/system/scannode-link.service`
 
     ```bash
     [Unit]
@@ -773,10 +785,8 @@ sudo apt-get install libssl-dev
 cd /opt/software
 # sudo wget -c https://github.com/Kitware/CMake/releases/download/v3.31.5/cmake-3.31.5.tar.gz
 sudo tar -zxvf cmake-3.31.5.tar.gz
-cd cmake-3.31.5
-sudo ./bootstrap
+cd /opt/software/cmake-3.31.5 && sudo ./bootstrap && sudo make -j$(nproc) install
 # Not recommended! "sudo ./configure --prefix=/usr/local/cmake3.30.2"
-sudo make -j$(nproc) install
 ```
 
 + Test：`cmake --version`
@@ -806,6 +816,7 @@ export PATH=$PATH:${ANACONDA_HOME}/bin' | sudo tee -a /etc/profile > /dev/null
 source /etc/profile
 
 conda config --set auto_activate_base false
+conda init
 ```
 
 + Test
@@ -829,16 +840,17 @@ conda info --env
 
 ```bash
 sudo apt-get update
-sudo apt-get install build-essential autoconf libtool pkg-config
-sudo apt-get install -y libssl-dev
+sudo apt-get install build-essential autoconf libtool pkg-config libssl-dev -y 
 
-# Download the specified version of the library
 cd /opt/software
-git clone -b v1.66.1 --depth 1 https://github.com/grpc/grpc.git
-cd grpc
+# Method 1: Download the specified version of the library
+git -c http.version=HTTP/1.1 clone -b v1.66.1 --depth 1 https://github.com/grpc/grpc.git
+cd /opt/software/grpc
 git submodule update --init --recursive	# Initialize the submodule
-mkdir build -p && cd build
-sudo cmake -DCMAKE_INSTALL_PREFIX=/usr/local/myapp_install/grpc1.66.1 ..
+# Method 2: copy tar to /opt/software
+sudo tar -xvzf grpc_v1.66.1_full_source.tar.gz
+cd /opt/software/grpc && mkdir build -p && cd build
+sudo cmake -DCMAKE_INSTALL_PREFIX=/usr/local/myapp_install/grpc1.66.1 .. 
 sudo make -j$(nproc) install
 ```
 
@@ -861,78 +873,31 @@ source /etc/profile
 + Test
 
 ```bash
-cd /opt/software/grpc/examples/cpp/helloworld/
-mkdir build && cd build
-cmake  -DCMAKE_PREFIX_PATH="/usr/local/myapp_install/grpc1.66.1"  ..
-make -j$(nproc)
+cd /opt/software/grpc/examples/cpp/helloworld/ && sudo mkdir -p build && cd build
+sudo rm -rf /opt/software/grpc/examples/cpp/helloworld/build/*
+sudo cmake  -DCMAKE_PREFIX_PATH="/usr/local/myapp_install/grpc1.66.1" .. && sudo make -j$(nproc)
 ./greeter_server Server：listening on 0.0.0.0:50051
 ./greeter_client
 
 # "Greeter received: Hello world" appears, the installation is successful.
 ```
 
-# OpenMPI
-+ Download the source from the [official-site](https://www.open-mpi.org/)：`openmpi-5.0.5.tar.gz`
-
-```bash
-sudo apt-get install libnuma-dev numactl
-sudo apt install libucx-dev ucx-utils -y
-
-cd /opt/software
-wget -c https://download.open-mpi.org/release/open-mpi/v5.0/openmpi-5.0.5.tar.gz
-sudo tar -zxvf openmpi-5.0.5.tar.gz
-cd openmpi-5.0.5
-sudo ./configure	--prefix=/usr/local/myapp_install/openmpi5.0.5 \
-                  --with-zlib \
-                  --with-ucx
-sudo make -j$(nproc) install
-```
-
-+ Configure environment variables
-
-```bash
-echo '
-# openmpi
-MPI_HOME=/usr/local/myapp_install/openmpi5.0.5
-export PATH=$PATH:${MPI_HOME}/bin
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${MPI_HOME}/lib
-export MANPATH=$MANPATH:${MPI_HOME}/share/man' | sudo tee -a /etc/profile > /dev/null
-
-# Update configuration file
-source /etc/profile
-```
-
-+ Test
-
-```bash
-cd /opt/software/openmpi-5.0.5/examples/
-mpicc hello_c.c -o hello -g
-mpirun -n 10 hello
-
-# Output
-Hello, world, I am 0 of 4, (Open MPI v5.0.5, package: Open MPI zas@zas Distribution, ident: 5.0.5, repo rev: v5.0.5, Jul 22, 2024, 102)
-Hello, world, I am 3 of 4, (Open MPI v5.0.5, package: Open MPI zas@zas Distribution, ident: 5.0.5, repo rev: v5.0.5, Jul 22, 2024, 102)
-```
-
 # NIC Driver
-+ Download the source from the [official-site](https://network.nvidia.com/products/infiniband-drivers/linux/mlnx_ofed/)：`MLNX_OFED-24.10-3.2.5.0/MLNX_OFED_LINUX-24.10-3.2.5.0-ubuntu22.04-x86_64.iso`
-+ [Website](https://blog.csdn.net/qq_37960243/article/details/123066359#:~:text=%E9%AA%8C%E8%AF%81%E7%B3%BB%E7%BB%9F%E6%98%AF%E5%90%A6%E5%AE%89%E8%A3%85%E4%BA%86N)
-
++ Download the source from the [official-site](https://network.nvidia.com/products/infiniband-drivers/linux/mlnx_ofed/)：`MLNX_OFED-24.10-3.2.5.0/MLNX_OFED_LINUX-24.10-5.1.6.1-ubuntu24.04-x86_64.iso`
 ```bash
 cd /opt/software
-sudo wget https://content.mellanox.com/ofed/MLNX_OFED-24.10-3.2.5.0/MLNX_OFED_LINUX-24.10-3.2.5.0-ubuntu22.04-x86_64.iso
+sudo wget -c https://content.mellanox.com/ofed/MLNX_OFED-24.10-5.1.6.1/MLNX_OFED_LINUX-24.10-5.1.6.1-ubuntu24.04-x86_64.iso
 # mount
-sudo mount -o ro,loop MLNX_OFED_LINUX-24.10-3.2.5.0-ubuntu22.04-x86_64.iso /mnt
-cd /mnt
-sudo ./mlnxofedinstall --force --with-dkms --add-kernel-support
+sudo mount -o ro,loop MLNX_OFED_LINUX-24.10-5.1.6.1-ubuntu24.04-x86_64.iso /mnt
+cd /mnt && sudo ./mlnxofedinstall --force --with-dkms --add-kernel-support
 ```
 
-+ Test
++ Test:    [website](https://blog.csdn.net/qq_37960243/article/details/123066359#:~:text=%E9%AA%8C%E8%AF%81%E7%B3%BB%E7%BB%9F%E6%98%AF%E5%90%A6%E5%AE%89%E8%A3%85%E4%BA%86N)
 
 ```bash
-sudo /etc/init.d/openibd restart 		# Load new driver
-sudo hca_self_test.ofed							# Check the NIC status
-ofed_info -s												# check version of ofed
+sudo /etc/init.d/openibd restart 	# Load new driver
+sudo hca_self_test.ofed  			# Check the NIC status
+ofed_info -s						# check version of ofed
 ibstat
 ibstatus
 ibv_devinfo
@@ -944,15 +909,13 @@ sudo umount -f /mnt		# umount
 
 # GPU Driver & CUDA
 + **<font style="color:#DF2A3F;">Note: The NIC driver must be installed first！</font>**
-+ Download the source from the [official-site](https://developer.nvidia.com/cuda-toolkit-archive)：`cuda_12.6.0_560.28.03_linux.run`
 + Disable the Nouveau driver
 
 ```bash
-sudo vim /etc/modprobe.d/blacklist-nouveau.conf
-
+echo '
 # Add at the end
 blacklist nouveau
-options nouveau modeset=0
+options nouveau modeset=0' | sudo tee -a /etc/modprobe.d/blacklist-nouveau.conf > /dev/null
 
 sudo update-initramfs -u
 sudo reboot
@@ -961,11 +924,12 @@ lsmod | grep nouveau		# If no content is displayed, the disablement was successf
 + Driver:  `NVIDIA-Linux-x86_64-580.95.05.run`
 
 > **Note：强烈建议加 `--dkms` 参数安装，这样内核更新后模块会自动重建，不会出现 `modprobe: FATAL: Module nvidia not found` 的问题。**
->
 > **如果不加 `--dkms`（默认行为），驱动只针对当前内核编译。一旦 `apt upgrade` 更新了内核，nvidia 模块不会自动重建，`nvidia-smi` 就会报错 "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver"。**
 > 此时必须重新运行 `.run` 安装文件来修复。
 
 ```bash
+cd /opt/software
+wget -c https://us.download.nvidia.com/XFree86/Linux-x86_64/580.95.05/NVIDIA-Linux-x86_64-580.95.05.run
 # 推荐：使用 DKMS 方式安装（内核更新后自动重建 nvidia 模块）
 sudo sh NVIDIA-Linux-x86_64-580.95.05.run --dkms
 
@@ -973,11 +937,10 @@ sudo sh NVIDIA-Linux-x86_64-580.95.05.run --dkms
 # sudo sh NVIDIA-Linux-x86_64-580.95.05.run
 ```
 
-+ Cuda
-
++ Cuda: Download the source from the [official-site](https://developer.nvidia.com/cuda-toolkit-archive)：`cuda_12.6.0_560.28.03_linux.run`
 ```bash
 cd /opt/software
-wget https://developer.download.nvidia.com/compute/cuda/12.6.0/local_installers/cuda_12.6.0_560.28.03_linux.run
+wget -c https://developer.download.nvidia.com/compute/cuda/12.6.0/local_installers/cuda_12.6.0_560.28.03_linux.run
 sudo sh cuda_12.6.0_560.28.03_linux.run
 ```
 
@@ -999,7 +962,7 @@ source /etc/profile
 ```bash
 nvcc -V
 nvidia-smi
-lspci |grep -i NVIDIA			# check GPU
+lspci | grep -i NVIDIA			# check GPU
 
 nvidia-smi topo -m				# 查看是否在同一总线下, gpu和rdma的直连不是必须的，当然二者如果直连是最好的
 sudo modprobe nvidia_peermem
@@ -1035,7 +998,7 @@ nvidia-smi
 
 ```bash
 cd /opt/software
-wget https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.16.1/tars/TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
+wget -c https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.16.1/tars/TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
 tar -xzvf TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
 sudo mv TensorRT-10.16.1.11 /usr/local/myapp_install/
 ```
@@ -1043,12 +1006,12 @@ sudo mv TensorRT-10.16.1.11 /usr/local/myapp_install/
 + Configure environment variables
 
 ```bash
-echo "
+echo '
 # TensorRT
 export TENSORRT_DIR=/usr/local/myapp_install/TensorRT-10.16.1.11
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$TENSORRT_DIR/lib
 export PATH=$PATH:$TENSORRT_DIR/bin
-export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:$TENSORRT_DIR/include" | sudo tee -a /etc/profile > /dev/null
+export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:$TENSORRT_DIR/include' | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -1077,25 +1040,17 @@ ldd $TENSORRT_DIR/bin/trtexec
 ```bash
 # Install required dependencies
 # if has network
-sudo apt-get install build-essential
-sudo apt-get install libgtk-3-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev -y
+sudo apt-get install build-essential libgtk-3-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev libgl1-mesa-dev libglu1-mesa-dev -y
 
 cd /opt/software
-git clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv.git opencv-4.12.0
-git clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv_contrib.git opencv_contrib-4.12.0
+# Method 1: Download the specified version of the library
+git -c http.version=HTTP/1.1 clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv.git opencv-4.12.0
+git -c http.version=HTTP/1.1 clone -b 4.12.0 --depth 1 https://github.com/opencv/opencv_contrib.git opencv_contrib-4.12.0
+# Method 2: copy tar into /opt/software
+tar -xzvf opencv_and_contrib-4.12.0.tar.gz
 
-# if no network, download opencv-4.12.0.zip and opencv_contrib-4.12.0.zip and upload it to linux
-cd /opt/software
-# upload zips into this dir
-unzip opencv-4.12.0.zip
-unzip opencv_contrib-4.12.0.zip
-
-# then make build
-cd opencv-4.12.0
-# If the previous build failed after changing GTK/OpenGL options:
-# sudo rm -rf build
-sudo mkdir build && cd build
 conda activate base				# activate python env
+cd /opt/software/opencv-4.12.0 && sudo rm -rf build && sudo mkdir -p build && cd build
 sudo cmake -D CMAKE_INSTALL_PREFIX=/usr/local/myapp_install/opencv4.12.0 \
            -D OPENCV_EXTRA_MODULES_PATH=/opt/software/opencv_contrib-4.12.0/modules \
            -D CMAKE_BUILD_TYPE=Release \
@@ -1119,8 +1074,7 @@ sudo cmake -D CMAKE_INSTALL_PREFIX=/usr/local/myapp_install/opencv4.12.0 \
            -D BUILD_EXAMPLES=OFF \
            -D INSTALL_TESTS=OFF \
            ..
-           
-# Please wait patiently, the above step will download something.
+
 sudo make -j$(nproc) install				# It takes a long time
 ```
 
@@ -1128,27 +1082,19 @@ Note: keep `WITH_OPENGL=OFF` unless OpenCV's OpenGL window APIs are required.
 With GTK2 and no `gtkglext`, OpenCV 4.12.0 may fail while linking `libopencv_highgui.so` with undefined references to
 `cvSetOpenGlDrawCallback`, `cvSetOpenGlContext`, and `cvUpdateWindow`.
 If OpenGL highgui support is required, install a compatible GUI/OpenGL backend first, remove the old `build` directory,
-and re-run CMake, for example:
-
-```bash
-sudo apt-get install libgtk-3-dev libgl1-mesa-dev libglu1-mesa-dev
-cd /opt/software/opencv-4.12.0
-sudo rm -rf build
-sudo mkdir build && cd build
-# then re-run the CMake command above with -D WITH_OPENGL=ON
-```
+and re-run CMake.
 
 + Configure environment variables
 
 ```bash
-echo "
+echo '
 # opencv
 OPENCV_HOME=/usr/local/myapp_install/opencv4.12.0
 export C_INCLUDE_PATH=$C_INCLUDE_PATH:${OPENCV_HOME}/include
 export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:${OPENCV_HOME}/include
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${OPENCV_HOME}/lib
 export LIBRARY_PATH=$LIBRARY_PATH:${OPENCV_HOME}/lib
-export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${OPENCV_HOME}/lib/pkgconfig" | sudo tee -a /etc/profile > /dev/null
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${OPENCV_HOME}/lib/pkgconfig' | sudo tee -a /etc/profile > /dev/null
 
 # Update configuration file
 source /etc/profile
@@ -1190,24 +1136,61 @@ int main()
 }
 ```
 
+# OpenMPI
++ Download the source from the [official-site](https://www.open-mpi.org/)：`openmpi-5.0.5.tar.gz`
+
+```bash
+sudo apt install libnuma-dev numactl libucx-dev ucx-utils -y
+
+cd /opt/software
+wget -c https://download.open-mpi.org/release/open-mpi/v5.0/openmpi-5.0.5.tar.gz
+sudo tar -zxvf openmpi-5.0.5.tar.gz && cd openmpi-5.0.5
+
+sudo ./configure  --prefix=/usr/local/myapp_install/openmpi5.0.5 \
+				   --with-zlib \
+				   --with-ucx
+sudo make -j$(nproc) install
+```
+
++ Configure environment variables
+
+```bash
+echo '
+# openmpi
+MPI_HOME=/usr/local/myapp_install/openmpi5.0.5
+export PATH=$PATH:${MPI_HOME}/bin
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${MPI_HOME}/lib
+export MANPATH=$MANPATH:${MPI_HOME}/share/man' | sudo tee -a /etc/profile > /dev/null
+
+# Update configuration file
+source /etc/profile
+```
+
++ Test
+
+```bash
+cd /opt/software/openmpi-5.0.5/examples/
+mpicc hello_c.c -o hello -g && mpirun -n 10 hello
+
+# Output
+Hello, world, I am 0 of 4, (Open MPI v5.0.5, package: Open MPI zas@zas Distribution, ident: 5.0.5, repo rev: v5.0.5, Jul 22, 2024, 102)
+Hello, world, I am 3 of 4, (Open MPI v5.0.5, package: Open MPI zas@zas Distribution, ident: 5.0.5, repo rev: v5.0.5, Jul 22, 2024, 102)
+```
+
 # tcpdump
 + **<font style="color:#DF2A3F;">Note: The NIC driver must be installed first！</font>**
 + Recompiling tcpdump from source is required to capture RDMA NIC packets.
 
 ```bash
 # tcpdump relies on libpcap, so libpcap must be compiled and installed first.
-sudo apt install autoconf -y
-sudo apt install flex bison -y
+sudo apt install autoconf flex bison -y
 cd /opt/software
-git clone --depth 1 https://github.com/the-tcpdump-group/libpcap.git
-cd libpcap
-sudo ./autogen.sh && sudo ./configure && sudo  make install
+git -c http.version=HTTP/1.1 clone --depth 1 https://github.com/the-tcpdump-group/libpcap.git
+git -c http.version=HTTP/1.1 clone --depth 1 https://github.com/the-tcpdump-group/tcpdump.git
 
-# Compile tcpdump with the same command.
-cd /opt/software
-git clone --depth 1 https://github.com/the-tcpdump-group/tcpdump.git
-cd tcpdump
-sudo ./autogen.sh && sudo ./configure &&  sudo make install
+tar -xzvf tcpdump_and_pcap.tar.gz
+cd /opt/software/libpcap && sudo ./autogen.sh && sudo ./configure && sudo  make install
+cd /opt/software/tcpdump && sudo ./autogen.sh && sudo ./configure && sudo make install
 ```
 
 + Test
@@ -1226,8 +1209,9 @@ sudo cp node_exporter /usr/local/bin/
 sudo chmod +x /usr/local/bin/node_exporter
 sudo mkdir -p /var/lib/node_exporter/textfile_collector
 sudo chown zas:zas /var/lib/node_exporter/textfile_collector
-
-sudo vim /etc/systemd/system/node_exporter.service
+```
++ `sudo vim /etc/systemd/system/node_exporter.service`
+```bash
 [Unit]
 Description=Node Exporter
 After=network.target
@@ -1240,16 +1224,16 @@ ExecStart=/usr/local/bin/node_exporter --collector.textfile.directory=/var/lib/n
 
 [Install]
 WantedBy=multi-user.target
-
+```
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable node_exporter.service
 sudo systemctl restart node_exporter.service
 sudo systemctl status node_exporter.service
-
+```
 # Mellanox 网卡温度采集
++ `sudo vim /usr/local/bin/mellanox_temp_collector.sh`
 ```bash
-sudo vim /usr/local/bin/mellanox_temp_collector.sh
-
 #!/bin/bash
 cd /  # 避免当前工作目录不可达时 getcwd 报错
 OUTPUT_DIR="/var/lib/node_exporter/textfile_collector"
@@ -1271,11 +1255,9 @@ mv "$TMP_FILE" "$OUTPUT_FILE"
 
 - 赋予权限：`sudo chmod +x /usr/local/bin/mellanox_temp_collector.sh`
 
-- 创建 systemd 定时任务
+- 创建 systemd 定时任务：`sudo vim /etc/systemd/system/mellanox_temp.service`
 
 ```bash
-sudo vim /etc/systemd/system/mellanox_temp.service
-
 [Unit]
 Description=Collect Mellanox NIC temperature
 
@@ -1285,9 +1267,8 @@ User=root
 ExecStart=/usr/local/bin/mellanox_temp_collector.sh
 ```
 
++ `sudo vim /etc/systemd/system/mellanox_temp.timer`
 ```bash
-sudo vim /etc/systemd/system/mellanox_temp.timer
-
 [Unit]
 Description=Run mellanox temp collector every minute
 
@@ -1319,9 +1300,8 @@ curl -s http://localhost:9100/metrics | grep mellanox_temp
 - `node_cpu_usage_ratio`：CPU 使用率（0~1，前端 ×100 即百分比），统计窗口为两次采样的间隔
 - `node_cpu_usage_collector_timestamp_seconds`：采样时间戳（unix 秒），可用于判断数据是否过期
 
++ `sudo vim /usr/local/bin/cpu_usage_collector.sh`
 ```bash
-sudo vim /usr/local/bin/cpu_usage_collector.sh
-
 #!/bin/bash
 cd /  # 避免当前工作目录不可达时 getcwd 报错
 OUTPUT_DIR="/var/lib/node_exporter/textfile_collector"
@@ -1356,9 +1336,8 @@ echo "$total $idle_all" > "$STATE_FILE"
 
 - 创建 systemd 定时任务（每 5 秒采样一次，比温度采集频率高，因为 CPU 变化快）
 
++ `sudo vim /etc/systemd/system/cpu_usage.service`
 ```bash
-sudo vim /etc/systemd/system/cpu_usage.service
-
 [Unit]
 Description=Collect CPU usage ratio
 
@@ -1368,9 +1347,8 @@ User=root
 ExecStart=/usr/local/bin/cpu_usage_collector.sh
 ```
 
++ `sudo vim /etc/systemd/system/cpu_usage.timer`
 ```bash
-sudo vim /etc/systemd/system/cpu_usage.timer
-
 [Unit]
 Description=Run cpu usage collector every 5 seconds
 
@@ -1392,85 +1370,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cpu_usage.timer
 
 # 验证（首次运行只写状态文件不出指标，等 10 秒以上再看）
-sleep 10
 cat /var/lib/node_exporter/textfile_collector/cpu_usage.prom
 curl -s http://localhost:9100/metrics | grep node_cpu_usage
-```
-
-# env variable
-```bash
-sudo vim /etc/profile
-```
-
-```bash
-# /etc/profile: system-wide .profile file for the Bourne shell (sh(1))
-# and Bourne compatible shells (bash(1), ksh(1), ash(1), ...).
-
-if [ "${PS1-}" ]; then
-  if [ "${BASH-}" ] && [ "$BASH" != "/bin/sh" ]; then
-    # The file bash.bashrc already sets the default PS1.
-    # PS1='\h:\w\$ '
-    if [ -f /etc/bash.bashrc ]; then
-      . /etc/bash.bashrc
-    fi
-  else
-    if [ "$(id -u)" -eq 0 ]; then
-      PS1='# '
-    else
-      PS1='$ '
-    fi
-  fi
-fi
-
-if [ -d /etc/profile.d ]; then
-  for i in /etc/profile.d/*.sh; do
-    if [ -r $i ]; then
-      . $i
-    fi
-  done
-  unset i
-fi
-
-# date
-TZ='Asia/Shanghai'
-export TZ
-
-# grpc
-GRPC_HOME=/usr/local/myapp_install/grpc1.66.1
-export PATH=$PATH:${GRPC_HOME}/bin
-export C_INCLUDE_PATH=$C_INCLUDE_PATH:${GRPC_HOME}/include
-export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:${GRPC_HOME}/include
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GRPC_HOME}/lib
-export LIBRARY_PATH=$LIBRARY_PATH:${GRPC_HOME}/lib
-
-# openmpi
-MPI_HOME=/usr/local/myapp_install/openmpi5.0.5
-export PATH=$PATH:${MPI_HOME}/bin
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${MPI_HOME}/lib
-export MANPATH=$MANPATH:${MPI_HOME}/share/man
-
-# Cuda
-CUDA_HOME=/usr/local/cuda
-export PATH=$PATH:${CUDA_HOME}/bin
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${CUDA_HOME}/lib64
-
-# opencv
-OPENCV_HOME=/usr/local/myapp_install/opencv4.12.0
-export C_INCLUDE_PATH=$C_INCLUDE_PATH:${OPENCV_HOME}/include
-export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:${OPENCV_HOME}/include
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${OPENCV_HOME}/lib
-export LIBRARY_PATH=$LIBRARY_PATH:${OPENCV_HOME}/lib
-export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:${OPENCV_HOME}/lib/pkgconfig
-
-# Anaconda
-ANACONDA_HOME=/usr/local/myapp_install/anaconda3
-export PATH=$PATH:${ANACONDA_HOME}/bin
-
-# GSL
-GSL_HOME=/usr/local/myapp_install/gsl2.8
-export C_INCLUDE_PATH=$C_INCLUDE_PATH:${GSL_HOME}/include
-export CPLUS_INCLUDE_PATH=$CPLUS_INCLUDE_PATH:${GSL_HOME}/include
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GSL_HOME}/lib
-export LIBRARY_PATH=$LIBRARY_PATH:${GSL_HOME}/lib
-
 ```
