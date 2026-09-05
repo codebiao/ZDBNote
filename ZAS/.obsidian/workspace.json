@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "nimc_env_config.md",
+                "file": "himc_env_config.md.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "nimc_env_config"
+              "title": "himc_env_config.md"
             }
           }
         ]
@@ -96,7 +96,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "nimc_env_config.md",
+                "file": "himc_env_config.md.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -198,10 +198,10 @@
   },
   "active": "3e489c2a5ee80b58",
   "lastOpenFiles": [
-    "未命名.canvas",
-    "himc_env_config.md.md",
     "nimc_env_config.md",
+    "himc_env_config.md.md",
     "rpc_if_data_format.md",
+    "未命名.canvas",
     "欢迎.md",
     "Untitled.md",
     "imgs/截图.png",

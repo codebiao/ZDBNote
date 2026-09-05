@@ -27,19 +27,38 @@ ssh zas@11.0.0.101
 +  Linux的NTP配置（Ubuntu 24.04起ntpd已废弃，改用chrony）
 
 ```bash
+# 如果机器上原来跑着旧 ntpd，先停止（apt 安装 chrony 时会自动卸载 ntp 包，二者争用 UDP 123 端口）
+sudo systemctl stop ntp ntpsec 2>/dev/null
+
 sudo apt install chrony
 
 sudo vim /etc/chrony/chrony.conf
+```
 
-server 192.168.99.1 iburst
+```conf
+server 192.168.99.1 iburst prefer
+# 外网源不可达时以本地时钟为源对内网授时（对应原来的 server 127.127.1.0 + fudge）
+# 注意必须带 distance 30：local 默认距离约 1s，网关 root dispersion 高达 ~10s，
+# 不带 distance 时本地时钟会把真实源"挤掉"（tracking 一直显示本地参考），系统实际在自由振荡
+local stratum 10 distance 30
 # 允许内网客户端访问（对应原来的restrict）
 allow 192.168.99.0/24
-# 允许启动时大幅度校正（对应原来的tos maxdist）
+# 允许启动时大幅度校正
 makestep 1.0 3
+# 放宽源选择阈值（对应原来的 tos maxdist 30）
+# 网关(Windows NTP)上报的 root dispersion ~10.3s，超过 chrony 默认的 3s，源会被判为不可用（^?）
+maxdistance 30
 ```
 
 ```bash
-sudo systemctl restart chronyd
+# 注意：enable/disable 必须用真名 chrony（chronyd 只是别名，仅 start/stop/restart/status 可用别名）
+sudo systemctl enable chrony
+sudo systemctl restart chrony
+
+# 验证
+chronyc tracking        # Reference ID 应为 192.168.99.1(C0A86301)，Stratum 6，Leap status: Normal
+chronyc sources -v      # 源状态应为 ^*（^? 表示未通过源选择测试，检查 maxdistance）
+sudo chronyc clients    # 查看内网 NIMC 客户端取时情况
 ```
 
 
@@ -64,6 +83,8 @@ sudo mkdir /cluster_files
 sudo chmod -R 777 /cluster_files
 sudo mkdir -p /cluster_files/data
 sudo mkdir -p /cluster_files/zpx_algo/scripts
+sudo mkdir -p /cluster_files/data/package /cluster_files/uploads/packages   # 部署解包目录(data/package) + 备份目录(uploads/packages)
+sudo chown -R zas:zas /cluster_files/data/package /cluster_files/uploads   # 交给 zas，避免 deploy.sh 备份/解包时 Permission denied
 sudo vim /etc/exports
 # 文件中加入以下内容
 /cluster_files/data     192.168.99.0/24(rw,sync,no_root_squash)
@@ -78,70 +99,249 @@ sudo mount -t nfs -o nolock,soft,timeo=7,retry=2 192.168.99.100:/cluster_files/d
 sudo mount -t nfs -o nolock,soft,timeo=7,retry=2 192.168.99.100:/cluster_files/zpx_algo/scripts /imc_list/imc0/scripts						
 ```
 
-+ Configure NFS restore script
+## NFS 自动恢复监控
 
+NFS 监控属于机器环境配置，运行时文件只能放在 `/usr/local/bin` 和 `/etc` 下，不依赖 `/cluster_files/zpx_algo`，避免程序更新覆盖监控配置。
+
+监控流程如下：
+
+1. 从 `/etc/nfs_mounts.conf` 读取并校验挂载项。
+2. 使用 `flock` 防止 timer 重复启动多个实例。
+3. 按“子挂载到父挂载”的顺序检查现有 NFS；来源不匹配或 `statfs` 超时时，执行 lazy unmount。
+4. 按“父挂载到子挂载”的顺序恢复缺失项；父挂载不可用时不挂载子目录。
+5. 新挂载完成后再次执行健康检查，失败则立即摘除，避免 `df -h` 长时间等待坏挂载。
+6. systemd timer 在开机 30 秒后首次运行，之后每 30 秒执行一次；执行结果写入 systemd journal。
+
+### 1. 安装监控脚本
 
 ```bash
 sudo vim /usr/local/bin/auto_nfs_monitor.sh
 ```
 
+写入以下内容：
+
 ```bash
 #!/bin/bash
-CONF="/etc/nfs_mounts.conf"
 
-while read -r line; do
-    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
-    remote=$(echo $line | awk '{print $1}')
-    localmnt=$(echo $line | awk '{print $2}')
-    opts=$(echo $line | awk '{$1="";$2=""; print $0}' | sed 's/^ *//')
-    mount | grep -q "on $localmnt type nfs"
-    is_mounted=$?
-    if [ $is_mounted -eq 0 ]; then
-        timeout 3 ls "$localmnt" &>/dev/null
-        if [ $? -ne 0 ]; then
-            sudo umount -l "$localmnt"
-        fi
-    else
-        timeout 3 showmount -e $(echo $remote | cut -d: -f1) &>/dev/null
-        if [ $? -eq 0 ]; then
-            sudo mkdir -p "$localmnt"
-            sudo mount -t nfs $opts $remote $localmnt
-        fi
+set -u
+
+readonly CONF="${NFS_MOUNTS_CONF:-/etc/nfs_mounts.conf}"
+readonly HEALTH_TIMEOUT_SECONDS=5
+readonly MOUNT_TIMEOUT_SECONDS=15
+
+declare -a REMOTES=()
+declare -a MOUNTPOINTS=()
+declare -a MOUNT_OPTIONS=()
+declare -A SEEN_MOUNTPOINTS=()
+FAILED=0
+
+log()
+{
+    printf '%s auto_nfs_monitor: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+load_configuration()
+{
+    if [[ ! -r "$CONF" ]]; then
+        log "configuration is not readable: $CONF"
+        return 1
     fi
-done < "$CONF"
+
+    local line_number=0
+    local remote local_mount option_flag mount_options trailing
+    while read -r remote local_mount option_flag mount_options trailing; do
+        ((line_number += 1))
+        [[ -z "${remote:-}" || "$remote" == \#* ]] && continue
+
+        if [[ -n "${trailing:-}" || "${option_flag:-}" != "-o" || -z "${mount_options:-}" ]]; then
+            log "invalid configuration at $CONF:$line_number"
+            FAILED=1
+            continue
+        fi
+        if [[ "$remote" != *:/* || "$local_mount" != /imc_list/imc* ]]; then
+            log "unsafe mount entry at $CONF:$line_number: $remote $local_mount"
+            FAILED=1
+            continue
+        fi
+        if [[ -n "${SEEN_MOUNTPOINTS[$local_mount]:-}" ]]; then
+            log "duplicate mount point at $CONF:$line_number: $local_mount"
+            FAILED=1
+            continue
+        fi
+
+        SEEN_MOUNTPOINTS["$local_mount"]=1
+        REMOTES+=("$remote")
+        MOUNTPOINTS+=("$local_mount")
+        MOUNT_OPTIONS+=("$mount_options")
+    done < "$CONF"
+
+    if ((${#MOUNTPOINTS[@]} == 0)); then
+        log "no valid mount entries found in $CONF"
+        return 1
+    fi
+}
+
+mounted_fstype()
+{
+    findmnt -rn -M "$1" -o FSTYPE 2>/dev/null || true
+}
+
+mounted_source()
+{
+    findmnt -rn -M "$1" -o SOURCE 2>/dev/null || true
+}
+
+is_healthy()
+{
+    timeout --kill-after=1s "${HEALTH_TIMEOUT_SECONDS}s" stat -f -- "$1" >/dev/null 2>&1
+}
+
+detach_mount()
+{
+    local local_mount="$1"
+    if umount -l -- "$local_mount"; then
+        log "detached unhealthy mount: $local_mount"
+    else
+        log "failed to detach unhealthy mount: $local_mount"
+        FAILED=1
+    fi
+}
+
+configured_parent_is_ready()
+{
+    local index="$1"
+    local local_mount="${MOUNTPOINTS[$index]}"
+    local parent_index parent_mount parent_fstype
+
+    for ((parent_index = 0; parent_index < index; ++parent_index)); do
+        parent_mount="${MOUNTPOINTS[$parent_index]}"
+        if [[ "$local_mount" == "$parent_mount"/* ]]; then
+            parent_fstype="$(mounted_fstype "$parent_mount")"
+            if [[ "$parent_fstype" != "nfs" && "$parent_fstype" != "nfs4" ]]; then
+                return 1
+            fi
+        fi
+    done
+    return 0
+}
+
+exec 9>/run/lock/auto_nfs_monitor.lock
+if ! flock -n 9; then
+    log "another monitor instance is still running"
+    exit 0
+fi
+
+if ! load_configuration; then
+    exit 1
+fi
+
+# Detach children before parents so nested NFS mount points cannot be orphaned.
+for ((index = ${#MOUNTPOINTS[@]} - 1; index >= 0; --index)); do
+    local_mount="${MOUNTPOINTS[$index]}"
+    expected_remote="${REMOTES[$index]}"
+    fstype="$(mounted_fstype "$local_mount")"
+
+    if [[ -z "$fstype" ]]; then
+        continue
+    fi
+    if [[ "$fstype" != "nfs" && "$fstype" != "nfs4" ]]; then
+        log "refusing to detach non-NFS mount at $local_mount (type=$fstype)"
+        FAILED=1
+        continue
+    fi
+
+    current_remote="$(mounted_source "$local_mount")"
+    if [[ "$current_remote" != "$expected_remote" ]]; then
+        log "source mismatch at $local_mount: expected=$expected_remote actual=$current_remote"
+        detach_mount "$local_mount"
+    elif ! is_healthy "$local_mount"; then
+        log "health check failed: $expected_remote on $local_mount"
+        detach_mount "$local_mount"
+    fi
+done
+
+# Mount parents before children. A child is deferred if its configured parent failed.
+for ((index = 0; index < ${#MOUNTPOINTS[@]}; ++index)); do
+    remote="${REMOTES[$index]}"
+    local_mount="${MOUNTPOINTS[$index]}"
+    mount_options="${MOUNT_OPTIONS[$index]}"
+    fstype="$(mounted_fstype "$local_mount")"
+
+    if [[ "$fstype" == "nfs" || "$fstype" == "nfs4" ]]; then
+        continue
+    fi
+    if [[ -n "$fstype" ]]; then
+        log "refusing to cover non-NFS mount at $local_mount (type=$fstype)"
+        FAILED=1
+        continue
+    fi
+    if ! configured_parent_is_ready "$index"; then
+        log "deferring $local_mount because its configured parent is unavailable"
+        FAILED=1
+        continue
+    fi
+
+    if ! mkdir -p -- "$local_mount"; then
+        log "failed to create mount point: $local_mount"
+        FAILED=1
+        continue
+    fi
+    if ! timeout --kill-after=2s "${MOUNT_TIMEOUT_SECONDS}s" mount -t nfs -o "$mount_options" "$remote" "$local_mount"; then
+        log "failed to mount $remote on $local_mount"
+        FAILED=1
+        continue
+    fi
+    if ! is_healthy "$local_mount"; then
+        log "new mount failed health check: $remote on $local_mount"
+        detach_mount "$local_mount"
+        FAILED=1
+        continue
+    fi
+    log "mounted $remote on $local_mount"
+done
+
+exit "$FAILED"
 ```
 
 ```bash
-sudo chmod +x auto_nfs_monitor.sh
+sudo chmod 0755 /usr/local/bin/auto_nfs_monitor.sh
+sudo bash -n /usr/local/bin/auto_nfs_monitor.sh
+```
+
+### 2. 配置 NFS 挂载列表
+
+```bash
 sudo vim /etc/nfs_mounts.conf
 ```
 
-```bash
-# 文件中加入以下内容
-192.168.99.100:/cluster_files/data /imc_list/imc0 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.100:/cluster_files/zpx_algo/scripts /imc_list/imc0/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.101:/cluster_files/data /imc_list/imc1 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.101:/cluster_files/zpx_algo/scripts /imc_list/imc1/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.102:/cluster_files/data /imc_list/imc2 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.102:/cluster_files/zpx_algo/scripts /imc_list/imc2/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.103:/cluster_files/data /imc_list/imc3 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.103:/cluster_files/zpx_algo/scripts /imc_list/imc3/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.104:/cluster_files/data /imc_list/imc4 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.104:/cluster_files/zpx_algo/scripts /imc_list/imc4/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.105:/cluster_files/data /imc_list/imc5 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.105:/cluster_files/zpx_algo/scripts /imc_list/imc5/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.106:/cluster_files/data /imc_list/imc6 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.106:/cluster_files/zpx_algo/scripts /imc_list/imc6/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.107:/cluster_files/data /imc_list/imc7 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.107:/cluster_files/zpx_algo/scripts /imc_list/imc7/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.108:/cluster_files/data /imc_list/imc8 -o nfsvers=3,nolock,soft,timeo=7,retry=2
-192.168.99.108:/cluster_files/zpx_algo/scripts /imc_list/imc8/scripts -o nfsvers=3,nolock,soft,timeo=7,retry=2
+当前集群只配置 `imc0` 到 `imc6`。父挂载必须写在对应子挂载之前；只有节点和两个 export 都存在后才能增加新节点。
 
+```text
+# Keep parent mounts before their nested child mounts.
+# soft is retained here so one unavailable aggregation node does not block df indefinitely.
+192.168.99.100:/cluster_files/data /imc_list/imc0 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.100:/cluster_files/zpx_algo/scripts /imc_list/imc0/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.101:/cluster_files/data /imc_list/imc1 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.101:/cluster_files/zpx_algo/scripts /imc_list/imc1/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.102:/cluster_files/data /imc_list/imc2 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.102:/cluster_files/zpx_algo/scripts /imc_list/imc2/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.103:/cluster_files/data /imc_list/imc3 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.103:/cluster_files/zpx_algo/scripts /imc_list/imc3/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.104:/cluster_files/data /imc_list/imc4 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.104:/cluster_files/zpx_algo/scripts /imc_list/imc4/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.105:/cluster_files/data /imc_list/imc5 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.105:/cluster_files/zpx_algo/scripts /imc_list/imc5/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.106:/cluster_files/data /imc_list/imc6 -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
+192.168.99.106:/cluster_files/zpx_algo/scripts /imc_list/imc6/scripts -o nfsvers=3,nolock,soft,timeo=7,retrans=2,retry=2
 ```
+
+### 3. 配置 systemd service
 
 ```bash
 sudo vim /etc/systemd/system/auto-nfs-monitor.service
+```
 
+```ini
 [Unit]
 Description=Auto NFS mount monitor
 After=network-online.target
@@ -150,39 +350,66 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/auto_nfs_monitor.sh
+TimeoutStartSec=300
+```
 
-[Install]
-WantedBy=multi-user.target
+### 4. 配置每 30 秒执行的 timer
 
-
+```bash
 sudo vim /etc/systemd/system/auto-nfs-monitor.timer
+```
 
+```ini
 [Unit]
-Description=Run auto_nfs_monitor.sh every 30 sec
+Description=Run auto_nfs_monitor.sh every 30 seconds
 
 [Timer]
-OnBootSec=5sec
-OnUnitActiveSec=30secdf -
+OnBootSec=30sec
+OnUnitActiveSec=30sec
+AccuracySec=5sec
 Unit=auto-nfs-monitor.service
 
 [Install]
 WantedBy=timers.target
 ```
 
+### 5. 加载并启动定时任务
+
 ```bash
+sudo systemd-analyze verify /etc/systemd/system/auto-nfs-monitor.service /etc/systemd/system/auto-nfs-monitor.timer
 sudo systemctl daemon-reload
-sudo systemctl enable auto-nfs-monitor.timer
-sudo systemctl start auto-nfs-monitor.timer
-sudo systemctl status auto-nfs-monitor.timer
+sudo systemctl enable --now auto-nfs-monitor.timer
+
+# 立即手动执行一次，不必等待下一次 timer
+sudo systemctl start auto-nfs-monitor.service
+```
+
+### 6. 检查运行状态
+
+```bash
+systemctl list-timers auto-nfs-monitor.timer --no-pager
+systemctl status auto-nfs-monitor.timer --no-pager
+systemctl status auto-nfs-monitor.service --no-pager
+journalctl -u auto-nfs-monitor.service --since today --no-pager
+
+# 验证所有 NFS 挂载；本地磁盘查看可使用 df -h -x nfs -x nfs4
+findmnt -t nfs,nfs4
+df -h
 ```
 
 # samba共享目录
+
++ 修改配置文件
 ```bash
 sudo mkdir -p /cluster_files/data/mshare
 sudo chmod 777 /cluster_files/data/mshare
 sudo cp /etc/samba/smb.conf /etc/samba/smb.conf.bak	# 备份samba配置文件
 sudo vim /etc/samba/smb.conf	# 添加以下内容
+```
 
++ 添加以下内容
+
+```bash
 [mshare]
    comment = share results using Samba
    path = /cluster_files/data/mshare
@@ -201,18 +428,22 @@ sudo vim /etc/samba/smb.conf	# 添加以下内容
    browseable = yes
    valid users = zas
 ```
-
-+ [mshare]：这是共享的名称，你可以在网络上访问该共享时使用。
-+ comment：这是关于共享的描述或注释，显示给用户看。
-+ path：这是共享的实际路径。
-+ public：这表示该共享是否为公共共享，即是否允许匿名用户访问。
-+ writable：表示是否允许用户在共享中创建、编辑和删除文件。
-+ available：表示该共享是否可用。
-+ browseable：表示该共享是否在网络上可以浏览。
-+ valid users：当前 Ubuntu 系统的用户名。
-
++ 设置账号密码（必做）
 ```bash
 sudo smbpasswd -a zas
+```
++ 字段解释：
+	+ [mshare]：这是共享的名称，你可以在网络上访问该共享时使用。
+	+ comment：这是关于共享的描述或注释，显示给用户看。
+	+ path：这是共享的实际路径。
+	+ public：这表示该共享是否为公共共享，即是否允许匿名用户访问。
+	+ writable：表示是否允许用户在共享中创建、编辑和删除文件。
+	+ available：表示该共享是否可用。
+	+ browseable：表示该共享是否在网络上可以浏览。
+	+ valid users：当前 Ubuntu 系统的用户名。
+
++ 查询指令
+```bash
 sudo systemctl restart smbd.service
 sudo systemctl enable smbd.service
 sudo systemctl status smbd.service
@@ -305,7 +536,7 @@ http {
     #tcp_nopush     on;
 
     #keepalive_timeout  0;
-    keepalive_timeout  65;
+    keepalive_timeout  300;
 
     client_max_body_size 1G;
     gzip  on;
@@ -501,8 +732,11 @@ Description=TTYD Web Terminal
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/ttyd -p 8765 bash
-WorkingDirectory=/tmp
+Type=simple
+User=zas
+Group=zas
+ExecStart=/usr/bin/ttyd -p 8765 -W bash
+WorkingDirectory=/home/zas
 Restart=always
 RestartSec=5
 RuntimeMaxSec=86400
