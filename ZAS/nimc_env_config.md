@@ -19,6 +19,7 @@ perftest
 valgrind
 libc6-dbg
 gdb
+elfutils
 patchelf
 nfs-kernel-server
 nfs-common
@@ -99,6 +100,8 @@ sudo systemctl stop chronyd
 sudo chronyd -q "server ntp.aliyun.com iburst"
 sudo systemctl start chronyd
 ```
+
++ 一次性校时只能管当前，集群内长期时间同步请按下文 [NTP时间同步](#ntp时间同步) 一节配置 chrony 客户端。
 
 ## 禁止内核更新
 
@@ -294,16 +297,134 @@ sudo hostnamectl set-hostname imc1
 hostnamectl
 ```
 
-## SSH免密登录
+## SSH 双网段集群免密登录（制作镜像前配置）
+
+NIMC 会作为母盘镜像还原到所有 HIMC。当前方案允许所有克隆节点共用同一套用户登录密钥和 SSH 服务端 host key，因此可以在制作镜像前完成免密配置；镜像还原后只需设置各节点的 hostname 和 IP，再在 imc0 执行连通性检查。
+
+本节所有用户目录下的命令都以 `zas` 执行，不要使用 `sudo`，否则文件会写入 root 的 home 目录。
+
+### 1. 启用 SSH 公钥认证
+
 ```bash
 sudo vim /etc/ssh/sshd_config
- 
-# 确保以下选项是启用的：
+```
+
+确保以下选项已启用且没有被后面的配置覆盖：
+
+```text
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
+```
 
+检查配置并重启 SSH 服务：
+
+```bash
+sudo sshd -t
+sudo systemctl enable ssh
 sudo systemctl restart ssh
 ```
+
+### 2. 生成集群共享用户密钥
+
+生成一套专用于 IMC 集群互访的 ED25519 密钥，不覆盖已有的 `id_rsa` 或 `id_ed25519`：
+
+```bash
+install -d -m 700 ~/.ssh
+
+ssh-keygen -t ed25519 -N "" \
+    -C "imc-cluster-shared-key" \
+    -f ~/.ssh/id_ed25519_imc_cluster
+
+chmod 600 ~/.ssh/id_ed25519_imc_cluster
+chmod 644 ~/.ssh/id_ed25519_imc_cluster.pub
+```
+
+生成后：
+
+- `~/.ssh/id_ed25519_imc_cluster` 是共享用户私钥，克隆后的每台节点用它主动登录其他节点。
+- `~/.ssh/id_ed25519_imc_cluster.pub` 是对应公钥，可以写入所有节点的 `authorized_keys`。
+- 如果同名文件已经存在，先确认它们是否为需要保留的集群密钥，不要在 `ssh-keygen` 提示时直接覆盖。
+
+### 3. 将共享公钥加入 authorized_keys
+
+```bash
+touch ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+
+PUBLIC_KEY=$(cat ~/.ssh/id_ed25519_imc_cluster.pub)
+grep -qxF "$PUBLIC_KEY" ~/.ssh/authorized_keys || \
+    printf '%s\n' "$PUBLIC_KEY" >> ~/.ssh/authorized_keys
+```
+
+镜像还原后，每台节点的 `authorized_keys` 都包含这把共享公钥，所以不需要再逐节点执行 `ssh-copy-id`。
+
+### 4. 生成双网段 known_hosts
+
+SSH 的用户密钥决定“谁可以登录”，`known_hosts` 决定“正在连接哪台机器”。当前镜像方案保留并克隆相同的 `/etc/ssh/ssh_host_ed25519_key`，所以所有节点的 SSH 服务端公钥也相同，可以在母盘中提前为全部 IP 建立记录。
+
+先根据实际集群修改 `NODE_SUFFIXES`。下面示例覆盖 `.100` 到 `.104`：
+
+```bash
+NODE_SUFFIXES=(100 101 102 103 104)
+
+read -r HOST_KEY_TYPE HOST_KEY_DATA _ \
+    < /etc/ssh/ssh_host_ed25519_key.pub
+
+: > ~/.ssh/known_hosts_imc_cluster
+
+for suffix in "${NODE_SUFFIXES[@]}"; do
+    printf '11.0.0.%s,192.168.99.%s %s %s\n' \
+        "$suffix" "$suffix" "$HOST_KEY_TYPE" "$HOST_KEY_DATA" \
+        >> ~/.ssh/known_hosts_imc_cluster
+done
+
+chmod 600 ~/.ssh/known_hosts_imc_cluster
+```
+
+生成结果类似：
+
+```text
+11.0.0.100,192.168.99.100 ssh-ed25519 AAAAC3...
+11.0.0.101,192.168.99.101 ssh-ed25519 AAAAC3...
+```
+
+两个 IP 代表同一节点；所有行的 host 公钥相同是当前镜像方案的预期结果。如果以后扩容或调整 IP，必须在重新制作镜像前同步更新 `NODE_SUFFIXES`，或者在已部署节点上更新该文件。
+
+### 5. 指定集群连接使用的密钥
+
+编辑 `zas` 的 SSH 客户端配置：
+
+```bash
+vim ~/.ssh/config
+```
+
+将下面区块放在文件顶部；SSH 配置采用先匹配优先，放在已有的 `Host *` 后面可能无法覆盖已有选项：
+
+```sshconfig
+Host 11.0.0.* 192.168.99.*
+    User zas
+    IdentityFile ~/.ssh/id_ed25519_imc_cluster
+    IdentitiesOnly yes
+    UserKnownHostsFile ~/.ssh/known_hosts_imc_cluster
+    StrictHostKeyChecking yes
+    ConnectTimeout 5
+
+# 恢复默认作用域，避免影响后面的原有配置
+Host *
+```
+
+```bash
+chmod 600 ~/.ssh/config
+```
+
+检查 SSH 实际解析出的配置：
+
+```bash
+ssh -G 11.0.0.101 | grep -E \
+    '^(user|identityfile|userknownhostsfile|stricthostkeychecking) '
+```
+
+预期使用 `zas`、`id_ed25519_imc_cluster`、`known_hosts_imc_cluster`，并且 `stricthostkeychecking` 为 `true`。
 
 ## PFC流控
 + 用命令（重启后失效）
@@ -385,30 +506,46 @@ sudo systemctl status set-pfc.service
 - Ubuntu 24.04起ntpd/ntpdate已废弃，改用chrony
 
 ```bash
+# 如果机器上原来跑着旧 ntpd，先停止（apt 安装 chrony 时会自动卸载 ntp 包，二者争用 UDP 123 端口）
+sudo systemctl stop ntp ntpsec 2>/dev/null
+
 sudo apt install chrony
 
 sudo vim /etc/chrony/chrony.conf
+```
 
-# 注释掉默认的pool，添加内网NTP服务器
+```conf
+# 注释掉默认的pool，添加内网NTP服务器（HIMC）
 #pool ntp.ubuntu.com        iburst maxsources 4
 #pool 0.ubuntu.pool.ntp.org iburst maxsources 1
 #pool 1.ubuntu.pool.ntp.org iburst maxsources 1
 #pool 2.ubuntu.pool.ntp.org iburst maxsources 2
-server 192.168.99.100 iburst
+server 192.168.99.100 iburst prefer
 
-# 允许在启动时进行大幅度时间校正（类似原来的tos maxdist效果）
+# 允许在启动时进行大幅度时间校正
 makestep 1.0 3
 
+# 放宽源选择阈值（对应原来 ntpd 的 tos maxdist 30）
+# HIMC 的 root dispersion 继承自网关（实测 ~10.3s），超过 chrony 默认的 3s，
+# 不放宽会把 HIMC 判为不可用源（^?）
+maxdistance 30
+```
+
+```bash
+# 注意：enable/disable 必须用真名 chrony（chronyd 只是别名，restart/stop/status 才可用别名）
+sudo systemctl enable chrony
 sudo systemctl restart chronyd
 ```
 
 ```bash
 # 强制同步时间
 sudo chronyc -a makestep
-# 或指定服务器强制同步（类似原来的ntpdate）
-sudo chronyd -q "server 192.168.99.1 iburst"
+# 或指定服务器强制一次性同步（类似原来的ntpdate，需先停止chronyd）
+sudo systemctl stop chronyd
+sudo chronyd -q "server 192.168.99.100 iburst"
+sudo systemctl start chronyd
 
-# 查看同步状态
+# 查看同步状态：Reference ID 应为 192.168.99.100，Leap status: Normal
 chronyc tracking
 chronyc sources -v
 ```
