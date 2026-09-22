@@ -47,8 +47,6 @@ clang
 # OpenMPI
 libnuma-dev
 numactl
-libucx-dev
-ucx-utils
 # opencv
 libgtk-3-dev 
 pkg-config 
@@ -443,31 +441,45 @@ sudo mlnx_qos -i enp193s0f1np1 --pfc 1,0,0,0,0,0,0,0
 
 ```bash
 #!/bin/bash
-# PFC自动配置脚本
-# 在IP地址为10.0.0.* 或 11.0.0.* 的网卡上启用PFC
+# PFC自动检测和配置脚本
+# 仅在 IP 地址为 10.0.0.* 或 11.0.0.* 的网卡未按预期启用 PFC 时进行配置
 
-sleep 60  # 等待网络服务完全启动
+expected_pfc="1,0,0,0,0,0,0,0"
 
 # 获取所有网卡设备
-for interface in $(ls /sys/class/net/); do
-    # 获取当前网卡的 IPv4 地址
-    IP=$(ip -4 addr show "$interface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
-    
-    # 检查 IP 地址是否在 10.0.0.* 或 11.0.0.* 范围内
-    if [[ $IP =~ ^(10|11)\.0\.0\.[0-9]{1,3}$ ]]; then
-        echo "Setting PFC on $interface ($IP)"
-        if sudo mlnx_qos -i "$interface" --pfc 1,0,0,0,0,0,0,0; then
-            echo "PFC set successfully on $interface ($IP)"
-        else
-            echo "Failed to set PFC on $interface ($IP)"
-        fi
+for interface_path in /sys/class/net/*; do
+    interface=${interface_path##*/}
+
+    # 检查网卡是否存在 10.0.0.* 或 11.0.0.* 的 IPv4 地址
+    IP=$(ip -o -4 addr show dev "$interface" 2>/dev/null | awk '$4 ~ /^(10|11)\.0\.0\./ {sub(/\/.*/, "", $4); print $4; exit}')
+    [[ -n $IP ]] || continue
+
+    # mlnx_qos 的 enabled 行依次表示 8 个优先级的 PFC 状态
+    current_pfc=$(mlnx_qos -i "$interface" 2>/dev/null | awk '
+        tolower($1) == "enabled" {
+            for (i = 2; i <= NF; i++) printf "%s%s", (i == 2 ? "" : ","), $i
+            print ""
+            exit
+        }
+    ')
+
+    if [[ $current_pfc == "$expected_pfc" ]]; then
+        echo "PFC already configured on $interface ($IP), skipping"
+        continue
+    fi
+
+    echo "PFC is '$current_pfc' on $interface ($IP), applying $expected_pfc"
+    if mlnx_qos -i "$interface" --pfc "$expected_pfc"; then
+        echo "PFC set successfully on $interface ($IP)"
+    else
+        echo "Failed to set PFC on $interface ($IP)" >&2
     fi
 done
 ```
 
 + 设置脚本执行权限：`sudo chmod +x /usr/local/bin/set_pfc.sh`
 
- + 创建systemd服务文件：`sudo vim /etc/systemd/system/set-pfc.service`
+ + 创建 systemd 服务文件：`sudo vim /etc/systemd/system/set-pfc.service`
 
 ```bash
 [Unit]
@@ -478,27 +490,42 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/set_pfc.sh
-RemainAfterExit=yes
-TimeoutStartSec=120
-
-[Install]
-WantedBy=multi-user.target
+TimeoutStartSec=60
 ```
 
-- 启用并启动服务
+ + 创建 systemd 定时器：`sudo vim /etc/systemd/system/set-pfc.timer`
+
+```ini
+[Unit]
+Description=Check PFC configuration every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=set-pfc.service
+
+[Install]
+WantedBy=timers.target
+```
+
+- 启用并启动定时器
 
 ```bash
 # 重新加载systemd配置
 sudo systemctl daemon-reload
 
-# 启用开机自启动
-sudo systemctl enable set-pfc.service
+# 如果之前启用过一次性服务，先取消它的开机自启动
+sudo systemctl disable --now set-pfc.service 2>/dev/null || true
 
-# 立即启动服务
-sudo systemctl start set-pfc.service
+# 启用定时器：开机 1 分钟后首次检测，之后每 5 分钟检测一次
+sudo systemctl enable --now set-pfc.timer
 
-# 检查服务状态
-sudo systemctl status set-pfc.service
+# 检查定时器状态和下次执行时间
+sudo systemctl status set-pfc.timer
+sudo systemctl list-timers set-pfc.timer
+
+# 查看最近的检测日志
+sudo journalctl -u set-pfc.service -n 50 --no-pager
 ```
 
 ## NTP时间同步
@@ -668,9 +695,9 @@ for base_dir in "${BASE_DIRS[@]}"; do
         cat > "$policy_file_path" <<EOF
 # 清理策略配置文件
 # 格式：<子目录名> <保留数量>
-# 示例：
-# lowlevel 1000
-# midlevel 500
+data/dump 200
+data/defect_img 20
+data/raw_data 5
 EOF
         if [ $? -eq 0 ]; then
             chown zas:zas "$policy_file_path"
@@ -720,7 +747,7 @@ exit 0
 ```
 
 + 赋予权限:`sudo chmod +x /usr/local/bin/cleanup_folder.sh`
- 
+
 + 设置systemd服务
   
     - `sudo vim /etc/systemd/system/cleanup_folder.service`
@@ -1277,7 +1304,7 @@ int main()
 + Download the source from the [official-site](https://www.open-mpi.org/)：`openmpi-5.0.5.tar.gz`
 
 ```bash
-sudo apt install libnuma-dev numactl libucx-dev ucx-utils -y
+sudo apt install libnuma-dev numactl -y
 
 cd /opt/software
 wget -c https://download.open-mpi.org/release/open-mpi/v5.0/openmpi-5.0.5.tar.gz
