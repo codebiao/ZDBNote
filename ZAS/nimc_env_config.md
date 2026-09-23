@@ -6,6 +6,7 @@
 ```bash
 build-essential
 git
+clang
 zlib1g-dev
 cmake 
 autoconf 
@@ -747,7 +748,7 @@ exit 0
 ```
 
 + 赋予权限:`sudo chmod +x /usr/local/bin/cleanup_folder.sh`
-
+ 
 + 设置systemd服务
   
     - `sudo vim /etc/systemd/system/cleanup_folder.service`
