@@ -6,7 +6,6 @@
 ```bash
 build-essential
 git
-clang
 zlib1g-dev
 cmake 
 autoconf 
@@ -38,7 +37,6 @@ samba
 network-manager
 autofs
 stress-ng
-iperf3
 lm-sensors
 dwarves
 smartmontools
@@ -696,8 +694,8 @@ for base_dir in "${BASE_DIRS[@]}"; do
         cat > "$policy_file_path" <<EOF
 # 清理策略配置文件
 # 格式：<子目录名> <保留数量>
-data/dump 200
-data/defect_img 20
+data/dump 500
+data/defect_img 500
 data/raw_data 5
 EOF
         if [ $? -eq 0 ]; then
