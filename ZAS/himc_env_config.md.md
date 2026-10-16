@@ -9,18 +9,15 @@ sudo hostnamectl set-hostname imc0
 hostnamectl
 ```
 
-# SSH免密登录
-+ 在本地主机上，生成密钥对，并将公钥复制到远程主机
+# SSH 双网段集群免密检查
+
+## 检查全集群双网段互访
+
+在 imc0 执行只读检查：
 
 ```bash
-# 生成密钥对
-ssh-keygen -t rsa
-
-# 将公钥复制到远程主机
-ssh-copy-id zas@11.0.0.101
-
-# 测试免密登录
-ssh zas@11.0.0.101
+cd /cluster_files/zpx_algo
+./scripts/config_ssh_cluster.sh --verify-only
 ```
 
 # NTP时间同步
@@ -905,8 +902,9 @@ sudo systemctl start zpweb.service
 sudo systemctl status zpweb.service
 ```
 
-+ `zpweb` 默认会以 HTTPS 监听 `192.168.99.100:8888`，并复用 `/cluster_files/uploads/config/ssl/server.crt` 和 `/cluster_files/uploads/config/ssl/server.key`
-+ 如需自定义证书，可在 `zpweb.service` 或启动环境中覆盖 `ZPWEB_CERT_FILE` / `ZPWEB_KEY_FILE`
++ `zpweb` 默认会以 HTTPS 监听 `192.168.99.100:8888`，并使用 `/cluster_files/uploads/config/ssl/server.crt` 与 `/cluster_files/uploads/config/ssl/server.key`
++ 证书路径读取规则：zpweb 启动时读取环境变量 `ZPWEB_CERT_FILE` / `ZPWEB_KEY_FILE`（非空即生效），未设置或为空则回退到上面的编译默认路径 → 改证书路径**无需重新编译**
++ 证书在进程**启动时读取一次**：轮换证书后需 `sudo systemctl restart zpweb.service`（若经 nginx 反向代理，同时 `sudo nginx -s reload`）才会生效
 
 + 修改 `zpweb.service` 后，需要执行 `sudo systemctl daemon-reload`，然后重新启动 `zpweb` 服务。
 + 如果已有旧的 `screen` 会话，建议先销毁后再重启，避免旧会话沿用旧 limits：
