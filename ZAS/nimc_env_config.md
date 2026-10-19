@@ -428,7 +428,7 @@ ssh -G 11.0.0.101 | grep -E \
 
 ```bash
 # 查看PFC（10 网卡：zppj↔FPGA 的 RoCE 数据通道）
-sudo mlnx_qos -i enp193s0f0np0 --trust dscp
+sudo mlnx_qos -i "$(ip -o -4 addr show | awk '$4 ~ /^10\.0\.0\.101\// {print $2}')" --trust dscp
 # 设置PFC		# mlnx_qos 命令本身是非持久化的，重启后会失效
 sudo mlnx_qos -i enp193s0f0np0 --pfc 1,0,0,0,0,0,0,0
 # 11 网卡（IP 为 11.0.0.x：MPI 走 UCX/RoCE 的通道）同样需要设置 PFC，网卡名可用 `ip -br addr` 确认
